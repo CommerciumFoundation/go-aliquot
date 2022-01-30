@@ -18,6 +18,7 @@ package core
 
 import (
 	"context"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/log"
@@ -26,6 +27,7 @@ import (
 
 type StdIOUI struct {
 	client rpc.Client
+	mu     sync.Mutex
 }
 
 func NewStdIOUI() *StdIOUI {

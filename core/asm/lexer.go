@@ -68,10 +68,10 @@ func (it tokenType) String() string {
 
 var stringtokenTypes = []string{
 	eof:              "EOF",
-	lineStart:        "new line",
-	lineEnd:          "end of line",
 	invalidStatement: "invalid statement",
 	element:          "element",
+	lineEnd:          "end of line",
+	lineStart:        "new line",
 	label:            "label",
 	labelDef:         "label definition",
 	number:           "number",
@@ -234,7 +234,7 @@ func lexComment(l *lexer) stateFn {
 // the lex text state function to advance the parsing
 // process.
 func lexLabel(l *lexer) stateFn {
-	l.acceptRun(Alpha + "_" + Numbers)
+	l.acceptRun(Alpha + "_")
 
 	l.emit(label)
 
@@ -254,7 +254,7 @@ func lexInsideString(l *lexer) stateFn {
 
 func lexNumber(l *lexer) stateFn {
 	acceptance := Numbers
-	if l.accept("xX") {
+	if l.accept("0") || l.accept("xX") {
 		acceptance = HexadecimalNumbers
 	}
 	l.acceptRun(acceptance)

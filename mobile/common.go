@@ -87,11 +87,6 @@ func (h *Hash) GetHex() string {
 	return h.hash.Hex()
 }
 
-// String implements Stringer interface for printable representation of the hash.
-func (h *Hash) String() string {
-	return h.GetHex()
-}
-
 // Hashes represents a slice of hashes.
 type Hashes struct{ hashes []common.Hash }
 
@@ -191,11 +186,6 @@ func (a *Address) SetHex(address string) error {
 // GetHex retrieves the hex string representation of the address.
 func (a *Address) GetHex() string {
 	return a.address.Hex()
-}
-
-// String returns a printable representation of the address.
-func (a *Address) String() string {
-	return a.GetHex()
 }
 
 // Addresses represents a slice of addresses.

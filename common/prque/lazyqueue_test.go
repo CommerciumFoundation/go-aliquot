@@ -40,7 +40,7 @@ type lazyItem struct {
 	index   int
 }
 
-func testPriority(a interface{}) int64 {
+func testPriority(a interface{}, now mclock.AbsTime) int64 {
 	return a.(*lazyItem).p
 }
 
@@ -74,22 +74,17 @@ func TestLazyQueue(t *testing.T) {
 		q.Push(&items[i])
 	}
 
-	var (
-		lock   sync.Mutex
-		wg     sync.WaitGroup
-		stopCh = make(chan chan struct{})
-	)
-	defer wg.Wait()
-	wg.Add(1)
+	var lock sync.Mutex
+	stopCh := make(chan chan struct{})
 	go func() {
-		defer wg.Done()
 		for {
 			select {
 			case <-clock.After(testQueueRefresh):
 				lock.Lock()
 				q.Refresh()
 				lock.Unlock()
-			case <-stopCh:
+			case stop := <-stopCh:
+				close(stop)
 				return
 			}
 		}
@@ -109,8 +104,6 @@ func TestLazyQueue(t *testing.T) {
 		if rand.Intn(100) == 0 {
 			p := q.PopItem().(*lazyItem)
 			if p.p != maxPri {
-				lock.Unlock()
-				close(stopCh)
 				t.Fatalf("incorrect item (best known priority %d, popped %d)", maxPri, p.p)
 			}
 			q.Push(p)
@@ -120,5 +113,7 @@ func TestLazyQueue(t *testing.T) {
 		clock.WaitForTimers(1)
 	}
 
-	close(stopCh)
+	stop := make(chan struct{})
+	stopCh <- stop
+	<-stop
 }

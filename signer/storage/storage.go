@@ -41,7 +41,8 @@ type Storage interface {
 // EphemeralStorage is an in-memory storage that does
 // not persist values to disk. Mainly used for testing
 type EphemeralStorage struct {
-	data map[string]string
+	data      map[string]string
+	namespace string
 }
 
 // Put stores a value by key. 0-length keys results in noop.
@@ -82,5 +83,5 @@ type NoStorage struct{}
 func (s *NoStorage) Put(key, value string) {}
 func (s *NoStorage) Del(key string)        {}
 func (s *NoStorage) Get(key string) (string, error) {
-	return "", errors.New("missing key, I probably forgot")
+	return "", errors.New("I forgot")
 }

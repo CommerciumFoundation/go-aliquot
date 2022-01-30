@@ -20,8 +20,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"sync"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/p2p/simulations/pipes"
 )
@@ -32,26 +32,42 @@ func TestTCPPipe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	msgs := 50
-	size := 1024
-	for i := 0; i < msgs; i++ {
-		msg := make([]byte, size)
-		binary.PutUvarint(msg, uint64(i))
-		if _, err := c1.Write(msg); err != nil {
-			t.Fatal(err)
-		}
-	}
+	done := make(chan struct{})
 
-	for i := 0; i < msgs; i++ {
-		msg := make([]byte, size)
-		binary.PutUvarint(msg, uint64(i))
-		out := make([]byte, size)
-		if _, err := c2.Read(out); err != nil {
-			t.Fatal(err)
+	go func() {
+		msgs := 50
+		size := 1024
+		for i := 0; i < msgs; i++ {
+			msg := make([]byte, size)
+			_ = binary.PutUvarint(msg, uint64(i))
+
+			_, err := c1.Write(msg)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
-		if !bytes.Equal(msg, out) {
-			t.Fatalf("expected %#v, got %#v", msg, out)
+
+		for i := 0; i < msgs; i++ {
+			msg := make([]byte, size)
+			_ = binary.PutUvarint(msg, uint64(i))
+
+			out := make([]byte, size)
+			_, err := c2.Read(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !bytes.Equal(msg, out) {
+				t.Fatalf("expected %#v, got %#v", msg, out)
+			}
 		}
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("test timeout")
 	}
 }
 
@@ -61,41 +77,60 @@ func TestTCPPipeBidirections(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	msgs := 50
-	size := 7
-	for i := 0; i < msgs; i++ {
-		msg := []byte(fmt.Sprintf("ping %02d", i))
-		if _, err := c1.Write(msg); err != nil {
-			t.Fatal(err)
-		}
-	}
+	done := make(chan struct{})
 
-	for i := 0; i < msgs; i++ {
-		expected := []byte(fmt.Sprintf("ping %02d", i))
-		out := make([]byte, size)
-		if _, err := c2.Read(out); err != nil {
-			t.Fatal(err)
-		}
+	go func() {
+		msgs := 50
+		size := 7
+		for i := 0; i < msgs; i++ {
+			msg := []byte(fmt.Sprintf("ping %02d", i))
 
-		if !bytes.Equal(expected, out) {
-			t.Fatalf("expected %#v, got %#v", out, expected)
-		} else {
-			msg := []byte(fmt.Sprintf("pong %02d", i))
-			if _, err := c2.Write(msg); err != nil {
+			_, err := c1.Write(msg)
+			if err != nil {
 				t.Fatal(err)
 			}
 		}
-	}
 
-	for i := 0; i < msgs; i++ {
-		expected := []byte(fmt.Sprintf("pong %02d", i))
-		out := make([]byte, size)
-		if _, err := c1.Read(out); err != nil {
-			t.Fatal(err)
+		for i := 0; i < msgs; i++ {
+			expected := []byte(fmt.Sprintf("ping %02d", i))
+
+			out := make([]byte, size)
+			_, err := c2.Read(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !bytes.Equal(expected, out) {
+				t.Fatalf("expected %#v, got %#v", out, expected)
+			} else {
+				msg := []byte(fmt.Sprintf("pong %02d", i))
+				_, err := c2.Write(msg)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
-		if !bytes.Equal(expected, out) {
-			t.Fatalf("expected %#v, got %#v", out, expected)
+
+		for i := 0; i < msgs; i++ {
+			expected := []byte(fmt.Sprintf("pong %02d", i))
+
+			out := make([]byte, size)
+			_, err := c1.Read(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !bytes.Equal(expected, out) {
+				t.Fatalf("expected %#v, got %#v", out, expected)
+			}
 		}
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("test timeout")
 	}
 }
 
@@ -105,35 +140,46 @@ func TestNetPipe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	msgs := 50
-	size := 1024
-	var wg sync.WaitGroup
-	defer wg.Wait()
+	done := make(chan struct{})
 
-	// netPipe is blocking, so writes are emitted asynchronously
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		msgs := 50
+		size := 1024
+		// netPipe is blocking, so writes are emitted asynchronously
+		go func() {
+			for i := 0; i < msgs; i++ {
+				msg := make([]byte, size)
+				_ = binary.PutUvarint(msg, uint64(i))
+
+				_, err := c1.Write(msg)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+		}()
 
 		for i := 0; i < msgs; i++ {
 			msg := make([]byte, size)
-			binary.PutUvarint(msg, uint64(i))
-			if _, err := c1.Write(msg); err != nil {
-				t.Error(err)
+			_ = binary.PutUvarint(msg, uint64(i))
+
+			out := make([]byte, size)
+			_, err := c2.Read(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !bytes.Equal(msg, out) {
+				t.Fatalf("expected %#v, got %#v", msg, out)
 			}
 		}
+
+		done <- struct{}{}
 	}()
 
-	for i := 0; i < msgs; i++ {
-		msg := make([]byte, size)
-		binary.PutUvarint(msg, uint64(i))
-		out := make([]byte, size)
-		if _, err := c2.Read(out); err != nil {
-			t.Error(err)
-		}
-		if !bytes.Equal(msg, out) {
-			t.Errorf("expected %#v, got %#v", msg, out)
-		}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("test timeout")
 	}
 }
 
@@ -143,60 +189,71 @@ func TestNetPipeBidirections(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	msgs := 1000
-	size := 8
-	pingTemplate := "ping %03d"
-	pongTemplate := "pong %03d"
-	var wg sync.WaitGroup
-	defer wg.Wait()
+	done := make(chan struct{})
 
-	// netPipe is blocking, so writes are emitted asynchronously
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		msgs := 1000
+		size := 8
+		pingTemplate := "ping %03d"
+		pongTemplate := "pong %03d"
 
-		for i := 0; i < msgs; i++ {
-			msg := []byte(fmt.Sprintf(pingTemplate, i))
-			if _, err := c1.Write(msg); err != nil {
-				t.Error(err)
+		// netPipe is blocking, so writes are emitted asynchronously
+		go func() {
+			for i := 0; i < msgs; i++ {
+				msg := []byte(fmt.Sprintf(pingTemplate, i))
+
+				_, err := c1.Write(msg)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
-		}
-	}()
+		}()
 
-	// netPipe is blocking, so reads for pong are emitted asynchronously
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+		// netPipe is blocking, so reads for pong are emitted asynchronously
+		go func() {
+			for i := 0; i < msgs; i++ {
+				expected := []byte(fmt.Sprintf(pongTemplate, i))
 
+				out := make([]byte, size)
+				_, err := c1.Read(out)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if !bytes.Equal(expected, out) {
+					t.Fatalf("expected %#v, got %#v", expected, out)
+				}
+			}
+
+			done <- struct{}{}
+		}()
+
+		// expect to read pings, and respond with pongs to the alternate connection
 		for i := 0; i < msgs; i++ {
-			expected := []byte(fmt.Sprintf(pongTemplate, i))
+			expected := []byte(fmt.Sprintf(pingTemplate, i))
+
 			out := make([]byte, size)
-			if _, err := c1.Read(out); err != nil {
-				t.Error(err)
-			}
-			if !bytes.Equal(expected, out) {
-				t.Errorf("expected %#v, got %#v", expected, out)
-			}
-		}
-	}()
-
-	// expect to read pings, and respond with pongs to the alternate connection
-	for i := 0; i < msgs; i++ {
-		expected := []byte(fmt.Sprintf(pingTemplate, i))
-
-		out := make([]byte, size)
-		_, err := c2.Read(out)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if !bytes.Equal(expected, out) {
-			t.Errorf("expected %#v, got %#v", expected, out)
-		} else {
-			msg := []byte(fmt.Sprintf(pongTemplate, i))
-			if _, err := c2.Write(msg); err != nil {
+			_, err := c2.Read(out)
+			if err != nil {
 				t.Fatal(err)
 			}
+
+			if !bytes.Equal(expected, out) {
+				t.Fatalf("expected %#v, got %#v", expected, out)
+			} else {
+				msg := []byte(fmt.Sprintf(pongTemplate, i))
+
+				_, err := c2.Write(msg)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("test timeout")
 	}
 }

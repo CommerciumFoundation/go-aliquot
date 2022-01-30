@@ -21,18 +21,27 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common/compiler"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/internal/flags"
 	"github.com/ethereum/go-ethereum/log"
 	"gopkg.in/urfave/cli.v1"
+)
+
+const (
+	commandHelperTemplate = `{{.Name}}{{if .Subcommands}} command{{end}}{{if .Flags}} [command options]{{end}} [arguments...]
+{{if .Description}}{{.Description}}
+{{end}}{{if .Subcommands}}
+SUBCOMMANDS:
+	{{range .Subcommands}}{{.Name}}{{with .ShortName}}, {{.}}{{end}}{{ "\t" }}{{.Usage}}
+	{{end}}{{end}}{{if .Flags}}
+OPTIONS:
+{{range $.Flags}}{{"\t"}}{{.}}
+{{end}}
+{{end}}`
 )
 
 var (
@@ -94,14 +103,10 @@ var (
 		Usage: "Destination language for the bindings (go, java, objc)",
 		Value: "go",
 	}
-	aliasFlag = cli.StringFlag{
-		Name:  "alias",
-		Usage: "Comma separated aliases for function and event renaming, e.g. original1=alias1, original2=alias2",
-	}
 )
 
 func init() {
-	app = flags.NewApp(gitCommit, gitDate, "ethereum checkpoint helper tool")
+	app = utils.NewApp(gitCommit, gitDate, "ethereum checkpoint helper tool")
 	app.Flags = []cli.Flag{
 		abiFlag,
 		binFlag,
@@ -115,10 +120,9 @@ func init() {
 		pkgFlag,
 		outFlag,
 		langFlag,
-		aliasFlag,
 	}
 	app.Action = utils.MigrateFlags(abigen)
-	cli.CommandHelpTemplate = flags.OriginCommandHelpTemplate
+	cli.CommandHelpTemplate = commandHelperTemplate
 }
 
 func abigen(c *cli.Context) error {
@@ -140,12 +144,11 @@ func abigen(c *cli.Context) error {
 	}
 	// If the entire solidity code was specified, build and bind based on that
 	var (
-		abis    []string
-		bins    []string
-		types   []string
-		sigs    []map[string]string
-		libs    = make(map[string]string)
-		aliases = make(map[string]string)
+		abis  []string
+		bins  []string
+		types []string
+		sigs  []map[string]string
+		libs  = make(map[string]string)
 	)
 	if c.GlobalString(abiFlag.Name) != "" {
 		// Load up the ABI, optional bytecode and type name from the parameters
@@ -196,22 +199,10 @@ func abigen(c *cli.Context) error {
 				utils.Fatalf("Failed to build Solidity contract: %v", err)
 			}
 		case c.GlobalIsSet(vyFlag.Name):
-			output, err := compiler.CompileVyper(c.GlobalString(vyperFlag.Name), c.GlobalString(vyFlag.Name))
+			contracts, err = compiler.CompileVyper(c.GlobalString(vyperFlag.Name), c.GlobalString(vyFlag.Name))
 			if err != nil {
 				utils.Fatalf("Failed to build Vyper contract: %v", err)
 			}
-			contracts = make(map[string]*compiler.Contract)
-			for n, contract := range output {
-				name := n
-				// Sanitize the combined json names to match the
-				// format expected by solidity.
-				if !strings.Contains(n, ":") {
-					// Remove extra path components
-					name = abi.ToCamelCase(strings.TrimSuffix(filepath.Base(name), ".vy"))
-				}
-				contracts[name] = contract
-			}
-
 		case c.GlobalIsSet(jsonFlag.Name):
 			jsonOutput, err := ioutil.ReadFile(c.GlobalString(jsonFlag.Name))
 			if err != nil {
@@ -241,20 +232,8 @@ func abigen(c *cli.Context) error {
 			libs[libPattern] = nameParts[len(nameParts)-1]
 		}
 	}
-	// Extract all aliases from the flags
-	if c.GlobalIsSet(aliasFlag.Name) {
-		// We support multi-versions for aliasing
-		// e.g.
-		//      foo=bar,foo2=bar2
-		//      foo:bar,foo2:bar2
-		re := regexp.MustCompile(`(?:(\w+)[:=](\w+))`)
-		submatches := re.FindAllStringSubmatch(c.GlobalString(aliasFlag.Name), -1)
-		for _, match := range submatches {
-			aliases[match[1]] = match[2]
-		}
-	}
 	// Generate the contract binding
-	code, err := bind.Bind(types, abis, bins, sigs, c.GlobalString(pkgFlag.Name), lang, libs, aliases)
+	code, err := bind.Bind(types, abis, bins, sigs, c.GlobalString(pkgFlag.Name), lang, libs)
 	if err != nil {
 		utils.Fatalf("Failed to generate ABI binding: %v", err)
 	}

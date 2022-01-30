@@ -19,32 +19,30 @@ package p2p
 import (
 	"testing"
 	"time"
-
-	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
 func TestExpHeap(t *testing.T) {
 	var h expHeap
 
 	var (
-		basetime = mclock.AbsTime(10)
+		basetime = time.Unix(4000, 0)
 		exptimeA = basetime.Add(2 * time.Second)
 		exptimeB = basetime.Add(3 * time.Second)
 		exptimeC = basetime.Add(4 * time.Second)
 	)
-	h.add("b", exptimeB)
 	h.add("a", exptimeA)
+	h.add("b", exptimeB)
 	h.add("c", exptimeC)
 
-	if h.nextExpiry() != exptimeA {
+	if !h.nextExpiry().Equal(exptimeA) {
 		t.Fatal("wrong nextExpiry")
 	}
 	if !h.contains("a") || !h.contains("b") || !h.contains("c") {
 		t.Fatal("heap doesn't contain all live items")
 	}
 
-	h.expire(exptimeA.Add(1), nil)
-	if h.nextExpiry() != exptimeB {
+	h.expire(exptimeA.Add(1))
+	if !h.nextExpiry().Equal(exptimeB) {
 		t.Fatal("wrong nextExpiry")
 	}
 	if h.contains("a") {

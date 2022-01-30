@@ -31,10 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/enr"
 )
 
-var (
-	incompleteNodeURL = regexp.MustCompile("(?i)^(?:enode://)?([0-9a-f]+)$")
-	lookupIPFunc      = net.LookupIP
-)
+var incompleteNodeURL = regexp.MustCompile("(?i)^(?:enode://)?([0-9a-f]+)$")
 
 // MustParseV4 parses a node URL. It panics if the URL is not valid.
 func MustParseV4(rawurl string) *Node {
@@ -59,7 +56,7 @@ func MustParseV4(rawurl string) *Node {
 //
 // For complete nodes, the node ID is encoded in the username portion
 // of the URL, separated from the host by an @ sign. The hostname can
-// only be given as an IP address or using DNS domain name.
+// only be given as an IP address, DNS domain names are not allowed.
 // The port in the host name section is the TCP listening port. If the
 // TCP and UDP (discovery) ports differ, the UDP port is specified as
 // query parameter "discport".
@@ -110,6 +107,7 @@ func isNewV4(n *Node) bool {
 func parseComplete(rawurl string) (*Node, error) {
 	var (
 		id               *ecdsa.PublicKey
+		ip               net.IP
 		tcpPort, udpPort uint64
 	)
 	u, err := url.Parse(rawurl)
@@ -127,20 +125,15 @@ func parseComplete(rawurl string) (*Node, error) {
 		return nil, fmt.Errorf("invalid public key (%v)", err)
 	}
 	// Parse the IP address.
-	ip := net.ParseIP(u.Hostname())
-	if ip == nil {
-		ips, err := lookupIPFunc(u.Hostname())
-		if err != nil {
-			return nil, err
-		}
-		ip = ips[0]
+	host, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		return nil, fmt.Errorf("invalid host: %v", err)
 	}
-	// Ensure the IP is 4 bytes long for IPv4 addresses.
-	if ipv4 := ip.To4(); ipv4 != nil {
-		ip = ipv4
+	if ip = net.ParseIP(host); ip == nil {
+		return nil, errors.New("invalid IP address")
 	}
 	// Parse the port numbers.
-	if tcpPort, err = strconv.ParseUint(u.Port(), 10, 16); err != nil {
+	if tcpPort, err = strconv.ParseUint(port, 10, 16); err != nil {
 		return nil, errors.New("invalid port")
 	}
 	udpPort = tcpPort

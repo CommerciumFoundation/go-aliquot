@@ -24,6 +24,7 @@ import (
 	"crypto/ecdsa"
 	crand "crypto/rand"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -43,10 +44,6 @@ var (
 	ErrLocked  = accounts.NewAuthNeededError("password or unlock")
 	ErrNoMatch = errors.New("no key for given address or file")
 	ErrDecrypt = errors.New("could not decrypt key with given password")
-
-	// ErrAccountAlreadyExists is returned if an account attempted to import is
-	// already present in the keystore.
-	ErrAccountAlreadyExists = errors.New("account already exists")
 )
 
 // KeyStoreType is the reflect type of a keystore backend.
@@ -70,8 +67,7 @@ type KeyStore struct {
 	updateScope event.SubscriptionScope // Subscription scope tracking current live listeners
 	updating    bool                    // Whether the event notification loop is running
 
-	mu       sync.RWMutex
-	importMu sync.Mutex // Import Mutex locks the import to prevent two insertions from racing
+	mu sync.RWMutex
 }
 
 type unlocked struct {
@@ -283,9 +279,11 @@ func (ks *KeyStore) SignTx(a accounts.Account, tx *types.Transaction, chainID *b
 	if !found {
 		return nil, ErrLocked
 	}
-	// Depending on the presence of the chain ID, sign with 2718 or homestead
-	signer := types.LatestSignerForChainID(chainID)
-	return types.SignTx(tx, signer, unlockedKey.PrivateKey)
+	// Depending on the presence of the chain ID, sign with EIP155 or homestead
+	if chainID != nil {
+		return types.SignTx(tx, types.NewEIP155Signer(chainID), unlockedKey.PrivateKey)
+	}
+	return types.SignTx(tx, types.HomesteadSigner{}, unlockedKey.PrivateKey)
 }
 
 // SignHashWithPassphrase signs hash if the private key matching the given address
@@ -308,9 +306,12 @@ func (ks *KeyStore) SignTxWithPassphrase(a accounts.Account, passphrase string, 
 		return nil, err
 	}
 	defer zeroKey(key.PrivateKey)
-	// Depending on the presence of the chain ID, sign with or without replay protection.
-	signer := types.LatestSignerForChainID(chainID)
-	return types.SignTx(tx, signer, key.PrivateKey)
+
+	// Depending on the presence of the chain ID, sign with EIP155 or homestead
+	if chainID != nil {
+		return types.SignTx(tx, types.NewEIP155Signer(chainID), key.PrivateKey)
+	}
+	return types.SignTx(tx, types.HomesteadSigner{}, key.PrivateKey)
 }
 
 // Unlock unlocks the given account indefinitely.
@@ -442,27 +443,14 @@ func (ks *KeyStore) Import(keyJSON []byte, passphrase, newPassphrase string) (ac
 	if err != nil {
 		return accounts.Account{}, err
 	}
-	ks.importMu.Lock()
-	defer ks.importMu.Unlock()
-
-	if ks.cache.hasAddress(key.Address) {
-		return accounts.Account{
-			Address: key.Address,
-		}, ErrAccountAlreadyExists
-	}
 	return ks.importKey(key, newPassphrase)
 }
 
 // ImportECDSA stores the given key into the key directory, encrypting it with the passphrase.
 func (ks *KeyStore) ImportECDSA(priv *ecdsa.PrivateKey, passphrase string) (accounts.Account, error) {
-	ks.importMu.Lock()
-	defer ks.importMu.Unlock()
-
 	key := newKeyFromECDSA(priv)
 	if ks.cache.hasAddress(key.Address) {
-		return accounts.Account{
-			Address: key.Address,
-		}, ErrAccountAlreadyExists
+		return accounts.Account{}, fmt.Errorf("account already exists")
 	}
 	return ks.importKey(key, passphrase)
 }

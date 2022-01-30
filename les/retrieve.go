@@ -18,24 +18,28 @@ package les
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/light"
 )
 
 var (
 	retryQueue         = time.Millisecond * 100
+	softRequestTimeout = time.Millisecond * 500
 	hardRequestTimeout = time.Second * 10
 )
 
 // retrieveManager is a layer on top of requestDistributor which takes care of
 // matching replies by request ID and handles timeouts and resends if necessary.
 type retrieveManager struct {
-	dist               *requestDistributor
-	peers              *serverPeerSet
-	softRequestTimeout func() time.Duration
+	dist       *requestDistributor
+	peers      *peerSet
+	serverPool peerSelector
 
 	lock     sync.RWMutex
 	sentReqs map[uint64]*sentReq
@@ -43,6 +47,11 @@ type retrieveManager struct {
 
 // validatorFunc is a function that processes a reply message
 type validatorFunc func(distPeer, *Msg) error
+
+// peerSelector receives feedback info about response times and timeouts
+type peerSelector interface {
+	adjustResponseTime(*poolEntry, time.Duration, bool)
+}
 
 // sentReq represents a request sent and tracked by retrieveManager
 type sentReq struct {
@@ -90,12 +99,12 @@ const (
 )
 
 // newRetrieveManager creates the retrieve manager
-func newRetrieveManager(peers *serverPeerSet, dist *requestDistributor, srto func() time.Duration) *retrieveManager {
+func newRetrieveManager(peers *peerSet, dist *requestDistributor, serverPool peerSelector) *retrieveManager {
 	return &retrieveManager{
-		peers:              peers,
-		dist:               dist,
-		sentReqs:           make(map[uint64]*sentReq),
-		softRequestTimeout: srto,
+		peers:      peers,
+		dist:       dist,
+		serverPool: serverPool,
+		sentReqs:   make(map[uint64]*sentReq),
 	}
 }
 
@@ -110,7 +119,7 @@ func (rm *retrieveManager) retrieve(ctx context.Context, reqID uint64, req *dist
 	case <-ctx.Done():
 		sentReq.stop(ctx.Err())
 	case <-shutdown:
-		sentReq.stop(fmt.Errorf("client is shutting down"))
+		sentReq.stop(fmt.Errorf("Client is shutting down"))
 	}
 	return sentReq.getError()
 }
@@ -151,15 +160,6 @@ func (rm *retrieveManager) sendReq(reqID uint64, req *distReq, val validatorFunc
 
 	go r.retrieveLoop()
 	return r
-}
-
-// requested reports whether the request with given reqid is sent by the retriever.
-func (rm *retrieveManager) requested(reqId uint64) bool {
-	rm.lock.RLock()
-	defer rm.lock.RUnlock()
-
-	_, ok := rm.sentReqs[reqId]
-	return ok
 }
 
 // deliver is called by the LES protocol manager to deliver reply messages to waiting requests
@@ -325,7 +325,8 @@ func (r *sentReq) tryRequest() {
 		return
 	}
 
-	hrto := false
+	reqSent := mclock.Now()
+	srto, hrto := false, false
 
 	r.lock.RLock()
 	s, ok := r.sentTo[p]
@@ -335,13 +336,22 @@ func (r *sentReq) tryRequest() {
 	}
 
 	defer func() {
-		pp, ok := p.(*serverPeer)
-		if hrto && ok {
+		// send feedback to server pool and remove peer if hard timeout happened
+		pp, ok := p.(*peer)
+		if ok && r.rm.serverPool != nil {
+			respTime := time.Duration(mclock.Now() - reqSent)
+			r.rm.serverPool.adjustResponseTime(pp.poolEntry, respTime, srto)
+		}
+		if hrto {
 			pp.Log().Debug("Request timed out hard")
 			if r.rm.peers != nil {
-				r.rm.peers.unregister(pp.id)
+				r.rm.peers.Unregister(pp.id)
 			}
 		}
+
+		r.lock.Lock()
+		delete(r.sentTo, p)
+		r.lock.Unlock()
 	}()
 
 	select {
@@ -353,7 +363,8 @@ func (r *sentReq) tryRequest() {
 		}
 		r.eventsCh <- reqPeerEvent{event, p}
 		return
-	case <-time.After(r.rm.softRequestTimeout()):
+	case <-time.After(softRequestTimeout):
+		srto = true
 		r.eventsCh <- reqPeerEvent{rpSoftTimeout, p}
 	}
 
@@ -427,4 +438,11 @@ func (r *sentReq) stop(err error) {
 // stop function) after stopCh has been closed
 func (r *sentReq) getError() error {
 	return r.err
+}
+
+// genReqID generates a new random request ID
+func genReqID() uint64 {
+	var rnd [8]byte
+	rand.Read(rnd[:])
+	return binary.BigEndian.Uint64(rnd[:])
 }

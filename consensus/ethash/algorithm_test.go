@@ -726,16 +726,12 @@ func TestConcurrentDiskCacheGeneration(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		pend.Add(1)
+
 		go func(idx int) {
 			defer pend.Done()
-
-			config := Config{
-				CacheDir:     cachedir,
-				CachesOnDisk: 1,
-			}
-			ethash := New(config, nil, false)
+			ethash := New(Config{cachedir, 0, 1, "", 0, 0, ModeNormal}, nil, false)
 			defer ethash.Close()
-			if err := ethash.verifySeal(nil, block.Header(), false); err != nil {
+			if err := ethash.VerifySeal(nil, block.Header()); err != nil {
 				t.Errorf("proc %d: block verification failed: %v", idx, err)
 			}
 		}(i)
@@ -790,29 +786,4 @@ func BenchmarkHashimotoFullSmall(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		hashimotoFull(dataset, hash, 0)
 	}
-}
-
-func benchmarkHashimotoFullMmap(b *testing.B, name string, lock bool) {
-	b.Run(name, func(b *testing.B) {
-		tmpdir, err := ioutil.TempDir("", "ethash-test")
-		if err != nil {
-			b.Fatal(err)
-		}
-		defer os.RemoveAll(tmpdir)
-
-		d := &dataset{epoch: 0}
-		d.generate(tmpdir, 1, lock, false)
-		var hash [common.HashLength]byte
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			binary.PutVarint(hash[:], int64(i))
-			hashimotoFull(d.dataset, hash[:], 0)
-		}
-	})
-}
-
-// Benchmarks the full verification performance for mmap
-func BenchmarkHashimotoFullMmap(b *testing.B) {
-	benchmarkHashimotoFullMmap(b, "WithLock", true)
-	benchmarkHashimotoFullMmap(b, "WithoutLock", false)
 }

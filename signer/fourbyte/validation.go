@@ -23,14 +23,14 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/signer/core/apitypes"
+	"github.com/ethereum/go-ethereum/signer/core"
 )
 
 // ValidateTransaction does a number of checks on the supplied transaction, and
 // returns either a list of warnings, or an error (indicating that the transaction
 // should be immediately rejected).
-func (db *Database) ValidateTransaction(selector *string, tx *apitypes.SendTxArgs) (*apitypes.ValidationMessages, error) {
-	messages := new(apitypes.ValidationMessages)
+func (db *Database) ValidateTransaction(selector *string, tx *core.SendTxArgs) (*core.ValidationMessages, error) {
+	messages := new(core.ValidationMessages)
 
 	// Prevent accidental erroneous usage of both 'input' and 'data' (show stopper)
 	if tx.Data != nil && tx.Input != nil && !bytes.Equal(*tx.Data, *tx.Input) {
@@ -73,24 +73,14 @@ func (db *Database) ValidateTransaction(selector *string, tx *apitypes.SendTxArg
 	if bytes.Equal(tx.To.Address().Bytes(), common.Address{}.Bytes()) {
 		messages.Crit("Transaction recipient is the zero address")
 	}
-	switch {
-	case tx.GasPrice == nil && tx.MaxFeePerGas == nil:
-		messages.Crit("Neither 'gasPrice' nor 'maxFeePerGas' specified.")
-	case tx.GasPrice == nil && tx.MaxPriorityFeePerGas == nil:
-		messages.Crit("Neither 'gasPrice' nor 'maxPriorityFeePerGas' specified.")
-	case tx.GasPrice != nil && tx.MaxFeePerGas != nil:
-		messages.Crit("Both 'gasPrice' and 'maxFeePerGas' specified.")
-	case tx.GasPrice != nil && tx.MaxPriorityFeePerGas != nil:
-		messages.Crit("Both 'gasPrice' and 'maxPriorityFeePerGas' specified.")
-	}
 	// Semantic fields validated, try to make heads or tails of the call data
-	db.ValidateCallData(selector, data, messages)
+	db.validateCallData(selector, data, messages)
 	return messages, nil
 }
 
-// ValidateCallData checks if the ABI call-data + method selector (if given) can
+// validateCallData checks if the ABI call-data + method selector (if given) can
 // be parsed and seems to match.
-func (db *Database) ValidateCallData(selector *string, data []byte, messages *apitypes.ValidationMessages) {
+func (db *Database) validateCallData(selector *string, data []byte, messages *core.ValidationMessages) {
 	// If the data is empty, we have a plain value transfer, nothing more to do
 	if len(data) == 0 {
 		return
@@ -108,7 +98,7 @@ func (db *Database) ValidateCallData(selector *string, data []byte, messages *ap
 		if info, err := verifySelector(*selector, data); err != nil {
 			messages.Warn(fmt.Sprintf("Transaction contains data, but provided ABI signature could not be matched: %v", err))
 		} else {
-			messages.Info(fmt.Sprintf("Transaction invokes the following method: %q", info.String()))
+			messages.Info(info.String())
 			db.AddSelector(*selector, data[:4])
 		}
 		return
@@ -120,8 +110,8 @@ func (db *Database) ValidateCallData(selector *string, data []byte, messages *ap
 		return
 	}
 	if info, err := verifySelector(embedded, data); err != nil {
-		messages.Warn(fmt.Sprintf("Transaction contains data, but provided ABI signature could not be verified: %v", err))
+		messages.Warn(fmt.Sprintf("Transaction contains data, but provided ABI signature could not be varified: %v", err))
 	} else {
-		messages.Info(fmt.Sprintf("Transaction invokes the following method: %q", info.String()))
+		messages.Info(info.String())
 	}
 }

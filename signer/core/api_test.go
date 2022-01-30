@@ -35,7 +35,6 @@ import (
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/signer/core"
-	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/ethereum/go-ethereum/signer/fourbyte"
 	"github.com/ethereum/go-ethereum/signer/storage"
 )
@@ -72,7 +71,7 @@ func (ui *headlessUi) ApproveTx(request *core.SignTxRequest) (core.SignTxRespons
 }
 
 func (ui *headlessUi) ApproveSignData(request *core.SignDataRequest) (core.SignDataResponse, error) {
-	approved := (<-ui.approveCh == "Y")
+	approved := "Y" == <-ui.approveCh
 	return core.SignDataResponse{approved}, nil
 }
 
@@ -92,7 +91,7 @@ func (ui *headlessUi) ApproveListing(request *core.ListRequest) (core.ListRespon
 }
 
 func (ui *headlessUi) ApproveNewAccount(request *core.NewAccountRequest) (core.NewAccountResponse, error) {
-	if <-ui.approveCh == "Y" {
+	if "Y" == <-ui.approveCh {
 		return core.NewAccountResponse{true}, nil
 	}
 	return core.NewAccountResponse{false}, nil
@@ -224,18 +223,18 @@ func TestNewAcc(t *testing.T) {
 	}
 }
 
-func mkTestTx(from common.MixedcaseAddress) apitypes.SendTxArgs {
+func mkTestTx(from common.MixedcaseAddress) core.SendTxArgs {
 	to := common.NewMixedcaseAddress(common.HexToAddress("0x1337"))
 	gas := hexutil.Uint64(21000)
 	gasPrice := (hexutil.Big)(*big.NewInt(2000000000))
 	value := (hexutil.Big)(*big.NewInt(1e18))
 	nonce := (hexutil.Uint64)(0)
 	data := hexutil.Bytes(common.Hex2Bytes("01020304050607080a"))
-	tx := apitypes.SendTxArgs{
+	tx := core.SendTxArgs{
 		From:     from,
 		To:       &to,
 		Gas:      gas,
-		GasPrice: &gasPrice,
+		GasPrice: gasPrice,
 		Value:    value,
 		Data:     &data,
 		Nonce:    nonce}
@@ -255,9 +254,6 @@ func TestSignTx(t *testing.T) {
 	list, err = api.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(list) == 0 {
-		t.Fatal("Unexpected empty list")
 	}
 	a := common.NewMixedcaseAddress(list[0])
 

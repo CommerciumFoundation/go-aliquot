@@ -17,151 +17,290 @@
 package les
 
 import (
-	"crypto/rand"
-	"errors"
 	"math/big"
-	"reflect"
-	"sort"
 	"testing"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/forkid"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/p2p"
-	"github.com/ethereum/go-ethereum/p2p/enode"
-	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
-type testServerPeerSub struct {
-	regCh   chan *serverPeer
-	unregCh chan *serverPeer
-}
+const (
+	test_networkid   = 10
+	protocol_version = lpv2
+)
 
-func newTestServerPeerSub() *testServerPeerSub {
-	return &testServerPeerSub{
-		regCh:   make(chan *serverPeer, 1),
-		unregCh: make(chan *serverPeer, 1),
+var (
+	hash    = common.HexToHash("some string")
+	genesis = common.HexToHash("genesis hash")
+	headNum = uint64(1234)
+	td      = big.NewInt(123)
+)
+
+//ulc connects to trusted peer and send announceType=announceTypeSigned
+func TestPeerHandshakeSetAnnounceTypeToAnnounceTypeSignedForTrustedPeer(t *testing.T) {
+	id := newNodeID(t).ID()
+
+	//peer to connect(on ulc side)
+	p := peer{
+		Peer:    p2p.NewPeer(id, "test peer", []p2p.Cap{}),
+		version: protocol_version,
+		trusted: true,
+		rw: &rwStub{
+			WriteHook: func(recvList keyValueList) {
+				//checking that ulc sends to peer allowedRequests=onlyAnnounceRequests and announceType = announceTypeSigned
+				recv, _ := recvList.decode()
+				var reqType uint64
+
+				err := recv.get("announceType", &reqType)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if reqType != announceTypeSigned {
+					t.Fatal("Expected announceTypeSigned")
+				}
+			},
+			ReadHook: func(l keyValueList) keyValueList {
+				l = l.add("serveHeaders", nil)
+				l = l.add("serveChainSince", uint64(0))
+				l = l.add("serveStateSince", uint64(0))
+				l = l.add("txRelay", nil)
+				l = l.add("flowControl/BL", uint64(0))
+				l = l.add("flowControl/MRR", uint64(0))
+				l = l.add("flowControl/MRC", testCostList(0))
+
+				return l
+			},
+		},
+		network: test_networkid,
+	}
+
+	err := p.Handshake(td, hash, headNum, genesis, nil)
+	if err != nil {
+		t.Fatalf("Handshake error: %s", err)
+	}
+
+	if p.announceType != announceTypeSigned {
+		t.Fatal("Incorrect announceType")
 	}
 }
 
-func (t *testServerPeerSub) registerPeer(p *serverPeer)   { t.regCh <- p }
-func (t *testServerPeerSub) unregisterPeer(p *serverPeer) { t.unregCh <- p }
+func TestPeerHandshakeAnnounceTypeSignedForTrustedPeersPeerNotInTrusted(t *testing.T) {
+	id := newNodeID(t).ID()
+	p := peer{
+		Peer:    p2p.NewPeer(id, "test peer", []p2p.Cap{}),
+		version: protocol_version,
+		rw: &rwStub{
+			WriteHook: func(recvList keyValueList) {
+				//checking that ulc sends to peer allowedRequests=noRequests and announceType != announceTypeSigned
+				recv, _ := recvList.decode()
+				var reqType uint64
 
-func TestPeerSubscription(t *testing.T) {
-	peers := newServerPeerSet()
-	defer peers.close()
+				err := recv.get("announceType", &reqType)
+				if err != nil {
+					t.Fatal(err)
+				}
 
-	checkIds := func(expect []string) {
-		given := peers.ids()
-		if len(given) == 0 && len(expect) == 0 {
-			return
-		}
-		sort.Strings(given)
-		sort.Strings(expect)
-		if !reflect.DeepEqual(given, expect) {
-			t.Fatalf("all peer ids mismatch, want %v, given %v", expect, given)
-		}
+				if reqType == announceTypeSigned {
+					t.Fatal("Expected not announceTypeSigned")
+				}
+			},
+			ReadHook: func(l keyValueList) keyValueList {
+				l = l.add("serveHeaders", nil)
+				l = l.add("serveChainSince", uint64(0))
+				l = l.add("serveStateSince", uint64(0))
+				l = l.add("txRelay", nil)
+				l = l.add("flowControl/BL", uint64(0))
+				l = l.add("flowControl/MRR", uint64(0))
+				l = l.add("flowControl/MRC", testCostList(0))
+
+				return l
+			},
+		},
+		network: test_networkid,
 	}
-	checkPeers := func(peerCh chan *serverPeer) {
-		select {
-		case <-peerCh:
-		case <-time.NewTimer(100 * time.Millisecond).C:
-			t.Fatalf("timeout, no event received")
-		}
-		select {
-		case <-peerCh:
-			t.Fatalf("unexpected event received")
-		case <-time.NewTimer(10 * time.Millisecond).C:
-		}
+
+	err := p.Handshake(td, hash, headNum, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	checkIds([]string{})
-
-	sub := newTestServerPeerSub()
-	peers.subscribe(sub)
-
-	// Generate a random id and create the peer
-	var id enode.ID
-	rand.Read(id[:])
-	peer := newServerPeer(2, NetworkId, false, p2p.NewPeer(id, "name", nil), nil)
-	peers.register(peer)
-
-	checkIds([]string{peer.id})
-	checkPeers(sub.regCh)
-
-	peers.unregister(peer.id)
-	checkIds([]string{})
-	checkPeers(sub.unregCh)
+	if p.announceType == announceTypeSigned {
+		t.Fatal("Incorrect announceType")
+	}
 }
 
-type fakeChain struct{}
+func TestPeerHandshakeDefaultAllRequests(t *testing.T) {
+	id := newNodeID(t).ID()
 
-func (f *fakeChain) Config() *params.ChainConfig { return params.MainnetChainConfig }
-func (f *fakeChain) Genesis() *types.Block {
-	return core.DefaultGenesisBlock().ToBlock(rawdb.NewMemoryDatabase())
-}
-func (f *fakeChain) CurrentHeader() *types.Header { return &types.Header{Number: big.NewInt(10000000)} }
+	s := generateLesServer()
 
-func TestHandshake(t *testing.T) {
-	// Create a message pipe to communicate through
-	app, net := p2p.MsgPipe()
+	p := peer{
+		Peer:    p2p.NewPeer(id, "test peer", []p2p.Cap{}),
+		version: protocol_version,
+		rw: &rwStub{
+			ReadHook: func(l keyValueList) keyValueList {
+				l = l.add("announceType", uint64(announceTypeSigned))
+				l = l.add("allowedRequests", uint64(0))
 
-	// Generate a random id and create the peer
-	var id enode.ID
-	rand.Read(id[:])
-
-	peer1 := newClientPeer(2, NetworkId, p2p.NewPeer(id, "name", nil), net)
-	peer2 := newServerPeer(2, NetworkId, true, p2p.NewPeer(id, "name", nil), app)
-
-	var (
-		errCh1 = make(chan error, 1)
-		errCh2 = make(chan error, 1)
-
-		td      = big.NewInt(100)
-		head    = common.HexToHash("deadbeef")
-		headNum = uint64(10)
-		genesis = common.HexToHash("cafebabe")
-
-		chain1, chain2   = &fakeChain{}, &fakeChain{}
-		forkID1          = forkid.NewID(chain1.Config(), chain1.Genesis().Hash(), chain1.CurrentHeader().Number.Uint64())
-		forkID2          = forkid.NewID(chain2.Config(), chain2.Genesis().Hash(), chain2.CurrentHeader().Number.Uint64())
-		filter1, filter2 = forkid.NewFilter(chain1), forkid.NewFilter(chain2)
-	)
-
-	go func() {
-		errCh1 <- peer1.handshake(td, head, headNum, genesis, forkID1, filter1, func(list *keyValueList) {
-			var announceType uint64 = announceTypeSigned
-			*list = (*list).add("announceType", announceType)
-		}, nil)
-	}()
-	go func() {
-		errCh2 <- peer2.handshake(td, head, headNum, genesis, forkID2, filter2, nil, func(recv keyValueMap) error {
-			var reqType uint64
-			err := recv.get("announceType", &reqType)
-			if err != nil {
-				return err
-			}
-			if reqType != announceTypeSigned {
-				return errors.New("Expected announceTypeSigned")
-			}
-			return nil
-		})
-	}()
-
-	for i := 0; i < 2; i++ {
-		select {
-		case err := <-errCh1:
-			if err != nil {
-				t.Fatalf("handshake failed, %v", err)
-			}
-		case err := <-errCh2:
-			if err != nil {
-				t.Fatalf("handshake failed, %v", err)
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("timeout")
-		}
+				return l
+			},
+		},
+		network: test_networkid,
 	}
+
+	err := p.Handshake(td, hash, headNum, genesis, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if p.onlyAnnounce {
+		t.Fatal("Incorrect announceType")
+	}
+}
+
+func TestPeerHandshakeServerSendOnlyAnnounceRequestsHeaders(t *testing.T) {
+	id := newNodeID(t).ID()
+
+	s := generateLesServer()
+	s.onlyAnnounce = true
+
+	p := peer{
+		Peer:    p2p.NewPeer(id, "test peer", []p2p.Cap{}),
+		version: protocol_version,
+		rw: &rwStub{
+			ReadHook: func(l keyValueList) keyValueList {
+				l = l.add("announceType", uint64(announceTypeSigned))
+
+				return l
+			},
+			WriteHook: func(l keyValueList) {
+				for _, v := range l {
+					if v.Key == "serveHeaders" ||
+						v.Key == "serveChainSince" ||
+						v.Key == "serveStateSince" ||
+						v.Key == "txRelay" {
+						t.Fatalf("%v exists", v.Key)
+					}
+				}
+			},
+		},
+		network: test_networkid,
+	}
+
+	err := p.Handshake(td, hash, headNum, genesis, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+func TestPeerHandshakeClientReceiveOnlyAnnounceRequestsHeaders(t *testing.T) {
+	id := newNodeID(t).ID()
+
+	p := peer{
+		Peer:    p2p.NewPeer(id, "test peer", []p2p.Cap{}),
+		version: protocol_version,
+		rw: &rwStub{
+			ReadHook: func(l keyValueList) keyValueList {
+				l = l.add("flowControl/BL", uint64(0))
+				l = l.add("flowControl/MRR", uint64(0))
+				l = l.add("flowControl/MRC", RequestCostList{})
+
+				l = l.add("announceType", uint64(announceTypeSigned))
+
+				return l
+			},
+		},
+		network: test_networkid,
+		trusted: true,
+	}
+
+	err := p.Handshake(td, hash, headNum, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !p.onlyAnnounce {
+		t.Fatal("onlyAnnounce must be true")
+	}
+}
+
+func TestPeerHandshakeClientReturnErrorOnUselessPeer(t *testing.T) {
+	id := newNodeID(t).ID()
+
+	p := peer{
+		Peer:    p2p.NewPeer(id, "test peer", []p2p.Cap{}),
+		version: protocol_version,
+		rw: &rwStub{
+			ReadHook: func(l keyValueList) keyValueList {
+				l = l.add("flowControl/BL", uint64(0))
+				l = l.add("flowControl/MRR", uint64(0))
+				l = l.add("flowControl/MRC", RequestCostList{})
+
+				l = l.add("announceType", uint64(announceTypeSigned))
+
+				return l
+			},
+		},
+		network: test_networkid,
+	}
+
+	err := p.Handshake(td, hash, headNum, genesis, nil)
+	if err == nil {
+		t.FailNow()
+	}
+}
+
+func generateLesServer() *LesServer {
+	s := &LesServer{
+		defParams: flowcontrol.ServerParams{
+			BufLimit:    uint64(300000000),
+			MinRecharge: uint64(50000),
+		},
+		fcManager: flowcontrol.NewClientManager(nil, &mclock.System{}),
+	}
+	return s
+}
+
+type rwStub struct {
+	ReadHook  func(l keyValueList) keyValueList
+	WriteHook func(l keyValueList)
+}
+
+func (s *rwStub) ReadMsg() (p2p.Msg, error) {
+	payload := keyValueList{}
+	payload = payload.add("protocolVersion", uint64(protocol_version))
+	payload = payload.add("networkId", uint64(test_networkid))
+	payload = payload.add("headTd", td)
+	payload = payload.add("headHash", hash)
+	payload = payload.add("headNum", headNum)
+	payload = payload.add("genesisHash", genesis)
+
+	if s.ReadHook != nil {
+		payload = s.ReadHook(payload)
+	}
+
+	size, p, err := rlp.EncodeToReader(payload)
+	if err != nil {
+		return p2p.Msg{}, err
+	}
+
+	return p2p.Msg{
+		Size:    uint32(size),
+		Payload: p,
+	}, nil
+}
+
+func (s *rwStub) WriteMsg(m p2p.Msg) error {
+	recvList := keyValueList{}
+	if err := m.Decode(&recvList); err != nil {
+		return err
+	}
+
+	if s.WriteHook != nil {
+		s.WriteHook(recvList)
+	}
+
+	return nil
 }

@@ -27,7 +27,7 @@ import (
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
@@ -44,29 +44,25 @@ var (
 	ErrLocalIncompatibleOrStale = errors.New("local incompatible or needs update")
 )
 
-// Blockchain defines all necessary method to build a forkID.
-type Blockchain interface {
-	// Config retrieves the chain's fork configuration.
-	Config() *params.ChainConfig
-
-	// Genesis retrieves the chain's genesis block.
-	Genesis() *types.Block
-
-	// CurrentHeader retrieves the current head header of the canonical chain.
-	CurrentHeader() *types.Header
-}
-
 // ID is a fork identifier as defined by EIP-2124.
 type ID struct {
 	Hash [4]byte // CRC32 checksum of the genesis block and passed fork block numbers
 	Next uint64  // Block number of the next upcoming fork, or 0 if no forks are known
 }
 
-// Filter is a fork id filter to validate a remotely advertised ID.
-type Filter func(id ID) error
+// NewID calculates the Ethereum fork ID from the chain config and head.
+func NewID(chain *core.BlockChain) ID {
+	return newID(
+		chain.Config(),
+		chain.Genesis().Hash(),
+		chain.CurrentHeader().Number.Uint64(),
+	)
+}
 
-// NewID calculates the Ethereum fork ID from the chain config, genesis hash, and head.
-func NewID(config *params.ChainConfig, genesis common.Hash, head uint64) ID {
+// newID is the internal version of NewID, which takes extracted values as its
+// arguments instead of a chain. The reason is to allow testing the IDs without
+// having to simulate an entire blockchain.
+func newID(config *params.ChainConfig, genesis common.Hash, head uint64) ID {
 	// Calculate the starting checksum from the genesis hash
 	hash := crc32.ChecksumIEEE(genesis[:])
 
@@ -84,18 +80,9 @@ func NewID(config *params.ChainConfig, genesis common.Hash, head uint64) ID {
 	return ID{Hash: checksumToBytes(hash), Next: next}
 }
 
-// NewIDWithChain calculates the Ethereum fork ID from an existing chain instance.
-func NewIDWithChain(chain Blockchain) ID {
-	return NewID(
-		chain.Config(),
-		chain.Genesis().Hash(),
-		chain.CurrentHeader().Number.Uint64(),
-	)
-}
-
-// NewFilter creates a filter that returns if a fork ID should be rejected or not
+// NewFilter creates an filter that returns if a fork ID should be rejected or not
 // based on the local chain's status.
-func NewFilter(chain Blockchain) Filter {
+func NewFilter(chain *core.BlockChain) func(id ID) error {
 	return newFilter(
 		chain.Config(),
 		chain.Genesis().Hash(),
@@ -105,16 +92,10 @@ func NewFilter(chain Blockchain) Filter {
 	)
 }
 
-// NewStaticFilter creates a filter at block zero.
-func NewStaticFilter(config *params.ChainConfig, genesis common.Hash) Filter {
-	head := func() uint64 { return 0 }
-	return newFilter(config, genesis, head)
-}
-
 // newFilter is the internal version of NewFilter, taking closures as its arguments
 // instead of a chain. The reason is to allow testing it without having to simulate
 // an entire blockchain.
-func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() uint64) Filter {
+func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() uint64) func(id ID) error {
 	// Calculate the all the valid fork hash and fork next combos
 	var (
 		forks = gatherForks(config)
@@ -133,13 +114,10 @@ func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() ui
 	// Create a validator that will filter out incompatible chains
 	return func(id ID) error {
 		// Run the fork checksum validation ruleset:
-		//   1. If local and remote FORK_CSUM matches, compare local head to FORK_NEXT.
+		//   1. If local and remote FORK_CSUM matches, connect.
 		//        The two nodes are in the same fork state currently. They might know
 		//        of differing future forks, but that's not relevant until the fork
 		//        triggers (might be postponed, nodes might be updated to match).
-		//      1a. A remotely announced but remotely not passed block is already passed
-		//          locally, disconnect, since the chains are incompatible.
-		//      1b. No remotely announced fork; or not yet passed locally, connect.
 		//   2. If the remote FORK_CSUM is a subset of the local past forks and the
 		//      remote FORK_NEXT matches with the locally following fork block number,
 		//      connect.
@@ -155,18 +133,13 @@ func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() ui
 		for i, fork := range forks {
 			// If our head is beyond this fork, continue to the next (we have a dummy
 			// fork of maxuint64 as the last item to always fail this check eventually).
-			if head >= fork {
+			if head > fork {
 				continue
 			}
 			// Found the first unpassed fork block, check if our current state matches
 			// the remote checksum (rule #1).
 			if sums[i] == id.Hash {
-				// Fork checksum matched, check if a remote future fork block already passed
-				// locally without the local node being aware of it (rule #1a).
-				if id.Next > 0 && head >= id.Next {
-					return ErrLocalIncompatibleOrStale
-				}
-				// Haven't passed locally a remote-only fork, accept the connection (rule #1b).
+				// Yay, fork checksum matched, ignore any upcoming fork
 				return nil
 			}
 			// The local and remote nodes are in different forks currently, check if the
@@ -194,6 +167,13 @@ func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() ui
 		log.Error("Impossible fork ID validation", "id", id)
 		return nil // Something's very wrong, accept rather than reject
 	}
+}
+
+// checksum calculates the IEEE CRC32 checksum of a block number.
+func checksum(fork uint64) uint32 {
+	var blob [8]byte
+	binary.BigEndian.PutUint64(blob[:], fork)
+	return crc32.ChecksumIEEE(blob[:])
 }
 
 // checksumUpdate calculates the next IEEE CRC32 checksum based on the previous
@@ -233,7 +213,7 @@ func gatherForks(config *params.ChainConfig) []uint64 {
 			forks = append(forks, rule.Uint64())
 		}
 	}
-	// Sort the fork block numbers to permit chronological XOR
+	// Sort the fork block numbers to permit chronologival XOR
 	for i := 0; i < len(forks); i++ {
 		for j := i + 1; j < len(forks); j++ {
 			if forks[i] > forks[j] {

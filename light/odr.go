@@ -42,7 +42,6 @@ type OdrBackend interface {
 	BloomTrieIndexer() *core.ChainIndexer
 	BloomIndexer() *core.ChainIndexer
 	Retrieve(ctx context.Context, req OdrRequest) error
-	RetrieveTxStatus(ctx context.Context, req *TxStatusRequest) error
 	IndexerConfig() *IndexerConfig
 }
 
@@ -83,6 +82,7 @@ func StorageTrieID(state *TrieID, addrHash, root common.Hash) *TrieID {
 
 // TrieRequest is the ODR request type for state/storage trie entries
 type TrieRequest struct {
+	OdrRequest
 	Id    *TrieID
 	Key   []byte
 	Proof *NodeSet
@@ -95,6 +95,7 @@ func (req *TrieRequest) StoreResult(db ethdb.Database) {
 
 // CodeRequest is the ODR request type for retrieving contract code
 type CodeRequest struct {
+	OdrRequest
 	Id   *TrieID // references storage trie of the account
 	Hash common.Hash
 	Data []byte
@@ -102,14 +103,14 @@ type CodeRequest struct {
 
 // StoreResult stores the retrieved data in local database
 func (req *CodeRequest) StoreResult(db ethdb.Database) {
-	rawdb.WriteCode(db, req.Hash, req.Data)
+	db.Put(req.Hash[:], req.Data)
 }
 
 // BlockRequest is the ODR request type for retrieving block bodies
 type BlockRequest struct {
+	OdrRequest
 	Hash   common.Hash
 	Number uint64
-	Header *types.Header
 	Rlp    []byte
 }
 
@@ -118,8 +119,9 @@ func (req *BlockRequest) StoreResult(db ethdb.Database) {
 	rawdb.WriteBodyRLP(db, req.Hash, req.Number, req.Rlp)
 }
 
-// ReceiptsRequest is the ODR request type for retrieving receipts.
+// ReceiptsRequest is the ODR request type for retrieving block bodies
 type ReceiptsRequest struct {
+	OdrRequest
 	Untrusted bool // Indicator whether the result retrieved is trusted or not
 	Hash      common.Hash
 	Number    uint64
@@ -134,8 +136,11 @@ func (req *ReceiptsRequest) StoreResult(db ethdb.Database) {
 	}
 }
 
-// ChtRequest is the ODR request type for retrieving header by Canonical Hash Trie
+// ChtRequest is the ODR request type for state/storage trie entries
 type ChtRequest struct {
+	OdrRequest
+	Untrusted        bool   // Indicator whether the result retrieved is trusted or not
+	PeerId           string // The specified peer id from which to retrieve data.
 	Config           *IndexerConfig
 	ChtNum, BlockNum uint64
 	ChtRoot          common.Hash
@@ -147,9 +152,12 @@ type ChtRequest struct {
 // StoreResult stores the retrieved data in local database
 func (req *ChtRequest) StoreResult(db ethdb.Database) {
 	hash, num := req.Header.Hash(), req.Header.Number.Uint64()
-	rawdb.WriteHeader(db, req.Header)
-	rawdb.WriteTd(db, hash, num, req.Td)
-	rawdb.WriteCanonicalHash(db, hash, num)
+
+	if !req.Untrusted {
+		rawdb.WriteHeader(db, req.Header)
+		rawdb.WriteTd(db, hash, num, req.Td)
+		rawdb.WriteCanonicalHash(db, hash, num)
+	}
 }
 
 // BloomRequest is the ODR request type for retrieving bloom filters from a CHT structure
@@ -185,6 +193,7 @@ type TxStatus struct {
 
 // TxStatusRequest is the ODR request type for retrieving transaction status
 type TxStatusRequest struct {
+	OdrRequest
 	Hashes []common.Hash
 	Status []TxStatus
 }

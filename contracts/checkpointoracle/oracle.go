@@ -29,9 +29,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-// CheckpointOracle is a Go wrapper around an on-chain checkpoint oracle contract.
+// CheckpointOracle is a Go wrapper around an on-chain light client checkpoint oracle.
 type CheckpointOracle struct {
-	address  common.Address
 	contract *contract.CheckpointOracle
 }
 
@@ -41,12 +40,7 @@ func NewCheckpointOracle(contractAddr common.Address, backend bind.ContractBacke
 	if err != nil {
 		return nil, err
 	}
-	return &CheckpointOracle{address: contractAddr, contract: c}, nil
-}
-
-// ContractAddr returns the address of contract.
-func (oracle *CheckpointOracle) ContractAddr() common.Address {
-	return oracle.address
+	return &CheckpointOracle{contract: c}, nil
 }
 
 // Contract returns the underlying contract instance.
@@ -65,7 +59,7 @@ func (oracle *CheckpointOracle) LookupCheckpointEvents(blockLogs [][]*types.Log,
 			if err != nil {
 				continue
 			}
-			if event.Index == section && event.CheckpointHash == hash {
+			if event.Index == section && common.Hash(event.CheckpointHash) == hash {
 				votes = append(votes, event)
 			}
 		}

@@ -32,7 +32,7 @@ import (
 type fileCache struct {
 	all     mapset.Set // Set of all files from the keystore folder
 	lastMod time.Time  // Last time instance when a file was modified
-	mu      sync.Mutex
+	mu      sync.RWMutex
 }
 
 // scan performs a new scan on the given directory, compares against the already

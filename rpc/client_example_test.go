@@ -19,9 +19,9 @@ package rpc_test
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
@@ -31,16 +31,16 @@ import (
 // eth_getBlockByNumber("latest", {})
 //    returns the latest block object.
 //
-// eth_subscribe("newHeads")
+// eth_subscribe("newBlocks")
 //    creates a subscription which fires block objects when new blocks arrive.
 
 type Block struct {
-	Number *hexutil.Big
+	Number *big.Int
 }
 
 func ExampleClientSubscription() {
 	// Connect the client.
-	client, _ := rpc.Dial("ws://127.0.0.1:8545")
+	client, _ := rpc.Dial("ws://127.0.0.1:8485")
 	subch := make(chan Block)
 
 	// Ensure that subch receives the latest block.
@@ -75,8 +75,7 @@ func subscribeBlocks(client *rpc.Client, subch chan Block) {
 	// The connection is established now.
 	// Update the channel with the current block.
 	var lastBlock Block
-	err = client.CallContext(ctx, &lastBlock, "eth_getBlockByNumber", "latest", false)
-	if err != nil {
+	if err := client.CallContext(ctx, &lastBlock, "eth_getBlockByNumber", "latest"); err != nil {
 		fmt.Println("can't get latest block:", err)
 		return
 	}

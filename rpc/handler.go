@@ -85,8 +85,8 @@ func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *
 		serverSubs:     make(map[ID]*Subscription),
 		log:            log.Root(),
 	}
-	if conn.remoteAddr() != "" {
-		h.log = h.log.New("conn", conn.remoteAddr())
+	if conn.RemoteAddr() != "" {
+		h.log = h.log.New("conn", conn.RemoteAddr())
 	}
 	h.unsubscribeCb = newCallback(reflect.Value{}, reflect.ValueOf(h.unsubscribe))
 	return h
@@ -97,7 +97,7 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 	// Emit error response for empty batches:
 	if len(msgs) == 0 {
 		h.startCallProc(func(cp *callProc) {
-			h.conn.writeJSON(cp.ctx, errorMessage(&invalidRequestError{"empty batch"}))
+			h.conn.Write(cp.ctx, errorMessage(&invalidRequestError{"empty batch"}))
 		})
 		return
 	}
@@ -122,7 +122,7 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 		}
 		h.addSubscriptions(cp.notifiers)
 		if len(answers) > 0 {
-			h.conn.writeJSON(cp.ctx, answers)
+			h.conn.Write(cp.ctx, answers)
 		}
 		for _, n := range cp.notifiers {
 			n.activate()
@@ -139,7 +139,7 @@ func (h *handler) handleMsg(msg *jsonrpcMessage) {
 		answer := h.handleCallMsg(cp, msg)
 		h.addSubscriptions(cp.notifiers)
 		if answer != nil {
-			h.conn.writeJSON(cp.ctx, answer)
+			h.conn.Write(cp.ctx, answer)
 		}
 		for _, n := range cp.notifiers {
 			n.activate()
@@ -189,7 +189,7 @@ func (h *handler) cancelAllRequests(err error, inflightReq *requestOp) {
 	}
 	for id, sub := range h.clientSubs {
 		delete(h.clientSubs, id)
-		sub.close(err)
+		sub.quitWithError(err, false)
 	}
 }
 
@@ -240,7 +240,7 @@ func (h *handler) handleImmediate(msg *jsonrpcMessage) bool {
 		return false
 	case msg.isResponse():
 		h.handleResponse(msg)
-		h.log.Trace("Handled RPC response", "reqid", idForLog{msg.ID}, "duration", time.Since(start))
+		h.log.Trace("Handled RPC response", "reqid", idForLog{msg.ID}, "t", time.Since(start))
 		return true
 	default:
 		return false
@@ -281,7 +281,7 @@ func (h *handler) handleResponse(msg *jsonrpcMessage) {
 		return
 	}
 	if op.err = json.Unmarshal(msg.Result, &op.sub.subid); op.err == nil {
-		go op.sub.run()
+		go op.sub.start()
 		h.clientSubs[op.sub.subid] = op.sub
 	}
 }
@@ -292,20 +292,14 @@ func (h *handler) handleCallMsg(ctx *callProc, msg *jsonrpcMessage) *jsonrpcMess
 	switch {
 	case msg.isNotification():
 		h.handleCall(ctx, msg)
-		h.log.Debug("Served "+msg.Method, "duration", time.Since(start))
+		h.log.Debug("Served "+msg.Method, "t", time.Since(start))
 		return nil
 	case msg.isCall():
 		resp := h.handleCall(ctx, msg)
-		var ctx []interface{}
-		ctx = append(ctx, "reqid", idForLog{msg.ID}, "duration", time.Since(start))
 		if resp.Error != nil {
-			ctx = append(ctx, "err", resp.Error.Message)
-			if resp.Error.Data != nil {
-				ctx = append(ctx, "errdata", resp.Error.Data)
-			}
-			h.log.Warn("Served "+msg.Method, ctx...)
+			h.log.Warn("Served "+msg.Method, "reqid", idForLog{msg.ID}, "t", time.Since(start), "err", resp.Error.Message)
 		} else {
-			h.log.Debug("Served "+msg.Method, ctx...)
+			h.log.Debug("Served "+msg.Method, "reqid", idForLog{msg.ID}, "t", time.Since(start))
 		}
 		return resp
 	case msg.hasValidID():
@@ -333,22 +327,8 @@ func (h *handler) handleCall(cp *callProc, msg *jsonrpcMessage) *jsonrpcMessage 
 	if err != nil {
 		return msg.errorResponse(&invalidParamsError{err.Error()})
 	}
-	start := time.Now()
-	answer := h.runMethod(cp.ctx, msg, callb, args)
 
-	// Collect the statistics for RPC calls if metrics is enabled.
-	// We only care about pure rpc call. Filter out subscription.
-	if callb != h.unsubscribeCb {
-		rpcRequestGauge.Inc(1)
-		if answer.Error != nil {
-			failedReqeustGauge.Inc(1)
-		} else {
-			successfulRequestGauge.Inc(1)
-		}
-		rpcServingTimer.UpdateSince(start)
-		newRPCServingTimer(msg.Method, answer.Error == nil).UpdateSince(start)
-	}
-	return answer
+	return h.runMethod(cp.ctx, msg, callb, args)
 }
 
 // handleSubscribe processes *_subscribe method calls.

@@ -21,7 +21,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net"
 	"os"
@@ -70,30 +69,22 @@ func enrdump(ctx *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("INVALID: %v", err)
 	}
-	dumpRecord(os.Stdout, r)
+	fmt.Print(dumpRecord(r))
 	return nil
 }
 
 // dumpRecord creates a human-readable description of the given node record.
-func dumpRecord(out io.Writer, r *enr.Record) {
-	n, err := enode.New(enode.ValidSchemes, r)
-	if err != nil {
+func dumpRecord(r *enr.Record) string {
+	out := new(bytes.Buffer)
+	if n, err := enode.New(enode.ValidSchemes, r); err != nil {
 		fmt.Fprintf(out, "INVALID: %v\n", err)
 	} else {
 		fmt.Fprintf(out, "Node ID: %v\n", n.ID())
-		dumpNodeURL(out, n)
 	}
 	kv := r.AppendElements(nil)[1:]
 	fmt.Fprintf(out, "Record has sequence number %d and %d key/value pairs.\n", r.Seq(), len(kv)/2)
 	fmt.Fprint(out, dumpRecordKV(kv, 2))
-}
-
-func dumpNodeURL(out io.Writer, n *enode.Node) {
-	var key enode.Secp256k1
-	if n.Load(&key) != nil {
-		return // no secp256k1 public key
-	}
-	fmt.Fprintf(out, "URLv4:   %s\n", n.URLv4())
+	return out.String()
 }
 
 func dumpRecordKV(kv []interface{}, indent int) string {

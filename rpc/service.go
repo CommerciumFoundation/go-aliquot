@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/ethereum/go-ethereum/log"
 )
@@ -138,14 +139,16 @@ func newCallback(receiver, fn reflect.Value) *callback {
 	c := &callback{fn: fn, rcvr: receiver, errPos: -1, isSubscribe: isPubSub(fntype)}
 	// Determine parameter types. They must all be exported or builtin types.
 	c.makeArgTypes()
-
+	if !allExportedOrBuiltin(c.argTypes) {
+		return nil
+	}
 	// Verify return types. The function must return at most one error
 	// and/or one other non-error value.
 	outs := make([]reflect.Type, fntype.NumOut())
 	for i := 0; i < fntype.NumOut(); i++ {
 		outs[i] = fntype.Out(i)
 	}
-	if len(outs) > 2 {
+	if len(outs) > 2 || !allExportedOrBuiltin(outs) {
 		return nil
 	}
 	// If an error is returned, it must be the last returned value.
@@ -213,6 +216,27 @@ func (c *callback) call(ctx context.Context, method string, args []reflect.Value
 		return reflect.Value{}, err
 	}
 	return results[0].Interface(), nil
+}
+
+// Is this an exported - upper case - name?
+func isExported(name string) bool {
+	rune, _ := utf8.DecodeRuneInString(name)
+	return unicode.IsUpper(rune)
+}
+
+// Are all those types exported or built-in?
+func allExportedOrBuiltin(types []reflect.Type) bool {
+	for _, typ := range types {
+		for typ.Kind() == reflect.Ptr {
+			typ = typ.Elem()
+		}
+		// PkgPath will be non-empty even for an exported type,
+		// so we need to check the type name as well.
+		if !isExported(typ.Name()) && typ.PkgPath() != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // Is t context.Context or *context.Context?

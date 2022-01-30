@@ -86,7 +86,7 @@ func (b *Bytes) UnmarshalGraphQL(input interface{}) error {
 		}
 		*b = data
 	default:
-		err = fmt.Errorf("unexpected type %T for Bytes", input)
+		err = fmt.Errorf("Unexpected type for Bytes: %v", input)
 	}
 	return err
 }
@@ -220,7 +220,7 @@ func (b *Big) UnmarshalGraphQL(input interface{}) error {
 		num.SetInt64(int64(input))
 		*b = Big(num)
 	default:
-		err = fmt.Errorf("unexpected type %T for BigInt", input)
+		err = fmt.Errorf("Unexpected type for BigInt: %v", input)
 	}
 	return err
 }
@@ -284,7 +284,7 @@ func (b *Uint64) UnmarshalGraphQL(input interface{}) error {
 	case int32:
 		*b = Uint64(input)
 	default:
-		err = fmt.Errorf("unexpected type %T for Long", input)
+		err = fmt.Errorf("Unexpected type for Long: %v", input)
 	}
 	return err
 }
