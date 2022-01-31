@@ -507,8 +507,10 @@ func (ethash *Ethash) verifySeal(chain consensus.ChainReader, header *types.Head
 	number := header.Number.Uint64()
 
 	var (
-		digest []byte
-		result []byte
+		digest   []byte
+		result   []byte
+		powLight = ethash.lightPow(header.Number)
+		powFull  = ethash.fullPow(header.Number)
 	)
 	// If fast-but-heavy PoW verification was requested, use an ethash dataset
 	if fulldag {

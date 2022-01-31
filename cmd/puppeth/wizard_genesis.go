@@ -230,6 +230,11 @@ func (w *wizard) manageGenesis() {
 		fmt.Printf("Which block should Petersburg come into effect? (default = %v)\n", w.conf.Genesis.Config.PetersburgBlock)
 		w.conf.Genesis.Config.PetersburgBlock = w.readDefaultBigInt(w.conf.Genesis.Config.PetersburgBlock)
 
+		if w.conf.Genesis.Config.Clique == nil {
+			fmt.Println()
+			fmt.Printf("Which block should ProgPow come into effect? (default = %v)\n", w.conf.Genesis.Config.ProgpowBlock)
+			w.conf.Genesis.Config.ProgpowBlock = w.readDefaultBigInt(w.conf.Genesis.Config.ProgpowBlock)
+		}
 		out, _ := json.MarshalIndent(w.conf.Genesis.Config, "", "  ")
 		fmt.Printf("Chain configuration updated:\n\n%s\n", out)
 
