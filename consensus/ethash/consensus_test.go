@@ -83,4 +83,4 @@ func TestCalcDifficulty(t *testing.T) {
 			t.Error(name, "failed. Expected", test.CurrentDifficulty, "and calculated", diff)
 		}
 	}
-}
+// ProgPoW Consensus Test Code goes down here}

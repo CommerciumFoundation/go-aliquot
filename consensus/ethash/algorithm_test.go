@@ -730,7 +730,10 @@ func TestConcurrentDiskCacheGeneration(t *testing.T) {
 		go func(idx int) {
 			defer pend.Done()
 			
-			ethash := New(Config{cachedir, 0, 1, "", 0, 0, ModeNormal}, nil, false)
+//			ethash := New(Config{cachedir, 0, 1, "", 0, 0, ModeNormal}, nil, false)
+/* ProgPow notice block header differences, will need to revamp block header. */
+
+			ethash := New(Config{cachedir, 0, 1, false, "", 0, 0, false, ModeNormal, nil, nil}, nil, false)
 			defer ethash.Close()
 			if err := ethash.VerifySeal(nil, block.Header()); err != nil {
 				t.Errorf("proc %d: block verification failed: %v", idx, err)
@@ -740,7 +743,8 @@ func TestConcurrentDiskCacheGeneration(t *testing.T) {
 	pend.Wait()
 }
 
-//ProgPow
+/* Since we jump out of Hashimoto and into ProgPow we need to separate old from new. */
+// BenchmarkCacheGeneration
 func BenchmarkCacheGeneration(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		cache := make([]uint32, cacheSize(1)/4)
@@ -748,7 +752,7 @@ func BenchmarkCacheGeneration(b *testing.B) {
 	}
 }
 
-//ProgPow
+// BenchmarkSmallDatabaseGeneration
 func BenchmarkSmallDatasetGeneration(b *testing.B) {
 	cache := make([]uint32, 65536/4)
 	generateCache(cache, 0, make([]byte, 32))
@@ -760,7 +764,7 @@ func BenchmarkSmallDatasetGeneration(b *testing.B) {
 	}
 }
 
-//ProgPow
+// BenchmarkHashiMotoLight
 func BenchmarkHashimotoLight(b *testing.B) {
 	cache := make([]uint32, cacheSize(1)/4)
 	generateCache(cache, 0, make([]byte, 32))
@@ -789,7 +793,7 @@ func BenchmarkProgpowLight(b *testing.B) {
 	}
 }
 
-// BenchmarkHashimotoFullSmall benchmarks the full (small) verification performance.
+// Benchmark Hashimoto FullSmall
 func BenchmarkHashimotoFullSmall(b *testing.B) {
 	cache := make([]uint32, 65536/4)
 	generateCache(cache, 0, make([]byte, 32))

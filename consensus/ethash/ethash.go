@@ -18,6 +18,7 @@
 package ethash
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -49,8 +50,9 @@ var (
 	// two256 is a big integer representing 2^256
 	two256 = new(big.Int).Exp(big.NewInt(2), big.NewInt(256), big.NewInt(0))
 
-	// sharedEthash is a full instance that can be shared between multiple users.
-	sharedEthash = New(Config{"", 3, 0, "", 1, 0, ModeNormal}, nil, false)
+	// sharedEngines contains ethash instances which are mapped by progpow blocknumber
+	sharedEngines map[uint64]*Ethash
+	ethashMu      sync.Mutex // lock for modifying sharedEngines
 
 	// algorithmRevision is the data structure version used for file naming.
 	algorithmRevision = 23
@@ -205,6 +207,7 @@ type cache struct {
 	dump  *os.File  // File descriptor of the memory mapped cache
 	mmap  mmap.MMap // Memory map itself to unmap before releasing
 	cache []uint32  // The actual cache data content (may be memory mapped)
+	cDag  []uint32  // The cDag used by progpow. May be nil
 	once  sync.Once // Ensures the cache is generated only once
 }
 
@@ -226,6 +229,8 @@ func (c *cache) generate(dir string, limit int, test bool) {
 		if dir == "" {
 			c.cache = make([]uint32, size/4)
 			generateCache(c.cache, c.epoch, seed)
+			c.cDag = make([]uint32, progpowCacheWords)
+			generateCDag(c.cDag, c.cache, c.epoch)
 			return
 		}
 		// Disk storage is needed, this will get fancy
@@ -245,6 +250,8 @@ func (c *cache) generate(dir string, limit int, test bool) {
 		c.dump, c.mmap, c.cache, err = memoryMap(path)
 		if err == nil {
 			logger.Debug("Loaded old ethash cache from disk")
+			c.cDag = make([]uint32, progpowCacheWords)
+			generateCDag(c.cDag, c.cache, c.epoch)
 			return
 		}
 		logger.Debug("Failed to load old ethash cache", "err", err)
@@ -257,6 +264,9 @@ func (c *cache) generate(dir string, limit int, test bool) {
 			c.cache = make([]uint32, size/4)
 			generateCache(c.cache, c.epoch, seed)
 		}
+		c.cDag = make([]uint32, progpowCacheWords)
+		generateCDag(c.cDag, c.cache, c.epoch)
+
 		// Iterate over all previous instances and delete old ones
 		for ep := int(c.epoch) - limit; ep >= 0; ep-- {
 			seed := seedHash(uint64(ep)*epochLength + 1)
@@ -403,6 +413,7 @@ type Config struct {
 	DatasetsInMem  int
 	DatasetsOnDisk int
 	PowMode        Mode
+	ProgpowBlock     *big.Int // Block number at which to use progpow instead of hashimoto
 }
 
 // sealTask wraps a seal block with relative result channel for remote sealer thread.
@@ -564,8 +575,21 @@ func NewFullFaker() *Ethash {
 
 // NewShared creates a full sized ethash PoW shared between all requesters running
 // in the same process.
-func NewShared() *Ethash {
-	return &Ethash{shared: sharedEthash}
+func NewShared(progpowNumber *big.Int) *Ethash {
+	ethashMu.Lock()
+	if progpowNumber == nil {
+		progpowNumber = new(big.Int).SetUint64(uint64(math.MaxUint64))
+	}
+	if sharedEngines == nil {
+		sharedEngines = make(map[uint64]*Ethash)
+	}
+	sharedEngine, exist := sharedEngines[progpowNumber.Uint64()]
+	if !exist {
+		sharedEngine = New(Config{"", 3, 0, false, "", 1, 0, false, ModeNormal, progpowNumber, nil}, nil, false)
+		sharedEngines[progpowNumber.Uint64()] = sharedEngine
+	}
+	ethashMu.Unlock()
+	return &Ethash{shared: sharedEngine}
 }
 
 // Close closes the exit channel to notify all backend threads exiting.
@@ -714,4 +738,54 @@ func (ethash *Ethash) APIs(chain consensus.ChainReader) []rpc.API {
 // dataset.
 func SeedHash(block uint64) []byte {
 	return seedHash(block)
+}
+
+// CHECKER, THIS WILL BE MODIFIED TO ONLY DO PROGPOW AND ELIMINATE ETHASH DEPENDING ON PROGPOW GENESIS GENERATION
+
+type powTesla func(dataset []uint32, hash []byte, nonce, number uint64) ([]byte, []byte)
+type powTeslaLight func(size uint64, cache []uint32, hash []byte, nonce, number uint64) ([]byte, []byte)
+
+// fullPow returns either hashimoto or progpow full checker depending on number
+func (ethash *Ethash) fullPow(number *big.Int) powTesla {
+	if progpowNumber := ethash.config.ProgpowBlock; progpowNumber != nil && progpowNumber.Cmp(number) <= 0 {
+		ethashCache := ethash.cache(number.Uint64())
+		if ethashCache.cDag == nil {
+			log.Warn("cDag is nil, suboptimal performance")
+			cDag := make([]uint32, progpowCacheWords)
+			generateCDag(cDag, ethashCache.cache, number.Uint64()/epochLength)
+			ethashCache.cDag = cDag
+		}
+		mix := make([]byte, hashBytes)
+		return func(dataset []uint32, hash []byte, nonce, number uint64) ([]byte, []byte) {
+			lookup := func(index uint32) []byte {
+				for i := uint32(0); i < hashWords; i++ {
+					binary.LittleEndian.PutUint32(mix[i*4:], dataset[index+i])
+				}
+				return mix
+			}
+			return progpow(hash, nonce, uint64(len(dataset))*4, number, ethashCache.cDag, lookup)
+		}
+	}
+	return func(dataset []uint32, hash []byte, nonce uint64, number uint64) ([]byte, []byte) {
+		return hashimotoFull(dataset, hash, nonce)
+	}
+}
+
+// lightPow returns either hashimoto or progpow depending on number
+func (ethash *Ethash) lightPow(number *big.Int) powTeslaLight {
+	if progpowNumber := ethash.config.ProgpowBlock; progpowNumber != nil && progpowNumber.Cmp(number) <= 0 {
+		return func(size uint64, cache []uint32, hash []byte, nonce uint64, blockNumber uint64) ([]byte, []byte) {
+			ethashCache := ethash.cache(blockNumber)
+			if ethashCache.cDag == nil {
+				log.Warn("cDag is nil, suboptimal performance")
+				cDag := make([]uint32, progpowCacheWords)
+				generateCDag(cDag, ethashCache.cache, blockNumber/epochLength)
+				ethashCache.cDag = cDag
+			}
+			return progpowLight(size, cache, hash, nonce, blockNumber, ethashCache.cDag)
+		}
+	}
+	return func(size uint64, cache []uint32, hash []byte, nonce uint64, blockNumber uint64) ([]byte, []byte) {
+		return hashimotoLight(size, cache, hash, nonce)
+	}
 }
