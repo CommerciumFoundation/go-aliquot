@@ -19,6 +19,7 @@ package light
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"sync"
 	"time"
 
@@ -30,8 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/params/types/ctypes"
 )
 
 const (
@@ -49,7 +49,7 @@ var txPermanent = uint64(500)
 // always receive all locally signed transactions in the same order as they are
 // created.
 type TxPool struct {
-	config       *params.ChainConfig
+	config       ctypes.ChainConfigurator
 	signer       types.Signer
 	quit         chan bool
 	txFeed       event.Feed
@@ -67,7 +67,9 @@ type TxPool struct {
 	mined        map[common.Hash][]*types.Transaction // mined transactions by block hash
 	clearIdx     uint64                               // earliest block nr that can contain mined tx info
 
-	homestead bool
+	eip2f    bool
+	eip2028f bool
+	eip2718  bool // Fork indicator whether we are in the eip2718 stage.
 }
 
 // TxRelayBackend provides an interface to the mechanism that forwards transacions
@@ -86,10 +88,10 @@ type TxRelayBackend interface {
 }
 
 // NewTxPool creates a new light transaction pool
-func NewTxPool(config *params.ChainConfig, chain *LightChain, relay TxRelayBackend) *TxPool {
+func NewTxPool(config ctypes.ChainConfigurator, chain *LightChain, relay TxRelayBackend) *TxPool {
 	pool := &TxPool{
 		config:      config,
-		signer:      types.NewEIP155Signer(config.ChainID),
+		signer:      types.LatestSigner(config),
 		nonce:       make(map[common.Address]uint64),
 		pending:     make(map[common.Hash]*types.Transaction),
 		mined:       make(map[common.Hash][]*types.Transaction),
@@ -184,7 +186,7 @@ func (pool *TxPool) checkMinedTxs(ctx context.Context, hash common.Hash, number 
 		if _, err := GetBlockReceipts(ctx, pool.odr, hash, number); err != nil { // ODR caches, ignore results
 			return err
 		}
-		rawdb.WriteTxLookupEntries(pool.chainDb, block)
+		rawdb.WriteTxLookupEntriesByBlock(pool.chainDb, block)
 
 		// Update the transaction pool's state
 		for _, tx := range list {
@@ -221,6 +223,15 @@ func (pool *TxPool) rollbackTxs(hash common.Hash, txc txStateChanges) {
 func (pool *TxPool) reorgOnNewHead(ctx context.Context, newHeader *types.Header) (txStateChanges, error) {
 	txc := make(txStateChanges)
 	oldh := pool.chain.GetHeaderByHash(pool.head)
+	if oldh == nil {
+		current := pool.chain.CurrentHeader()
+		if current.Number.Uint64() > 0 {
+			oldh = pool.chain.GetHeaderByHash(current.ParentHash)
+		} else {
+			oldh = current
+		}
+		pool.head = oldh.Hash()
+	}
 	newh := newHeader
 	// find common ancestor, create list of rolled back and new block hashes
 	var oldHashes, newHashes []common.Hash
@@ -306,11 +317,24 @@ func (pool *TxPool) setNewHead(head *types.Header) {
 	ctx, cancel := context.WithTimeout(context.Background(), blockCheckTimeout)
 	defer cancel()
 
-	txc, _ := pool.reorgOnNewHead(ctx, head)
+	if head == nil {
+		return
+	}
+
+	txc, err := pool.reorgOnNewHead(ctx, head)
+	if err != nil {
+		log.Info("light.txpool reorg failed", "error", err)
+		return
+	}
 	m, r := txc.getLists()
 	pool.relay.NewHead(pool.head, m, r)
-	pool.homestead = pool.config.IsHomestead(head.Number)
-	pool.signer = types.MakeSigner(pool.config, head.Number)
+	pool.eip2f = pool.config.IsEnabled(pool.config.GetEIP2Transition, head.Number)
+
+	// Update fork indicator by next pending block number
+	next := new(big.Int).Add(head.Number, big.NewInt(1))
+
+	pool.eip2028f = pool.config.IsEnabled(pool.config.GetEIP2028Transition, next)
+	pool.eip2718 = pool.config.IsEnabled(pool.config.GetEIP2718Transition, next)
 }
 
 // Stop stops the light transaction pool
@@ -378,7 +402,7 @@ func (pool *TxPool) validateTx(ctx context.Context, tx *types.Transaction) error
 	}
 
 	// Should supply enough intrinsic gas
-	gas, err := core.IntrinsicGas(tx.Data(), tx.To() == nil, pool.homestead)
+	gas, err := core.IntrinsicGas(tx.Data(), tx.AccessList(), tx.To() == nil, pool.eip2f, pool.eip2028f)
 	if err != nil {
 		return err
 	}
@@ -427,8 +451,7 @@ func (pool *TxPool) add(ctx context.Context, tx *types.Transaction) error {
 func (pool *TxPool) Add(ctx context.Context, tx *types.Transaction) error {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
-
-	data, err := rlp.EncodeToBytes(tx)
+	data, err := tx.MarshalBinary()
 	if err != nil {
 		return err
 	}

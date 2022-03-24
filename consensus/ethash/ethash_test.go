@@ -18,6 +18,7 @@ package ethash
 
 import (
 	"io/ioutil"
+	"math"
 	"math/big"
 	"math/rand"
 	"os"
@@ -29,6 +30,56 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 )
+
+// Tests caches get sets correct future
+func TestCachesGet(t *testing.T) {
+	ethashA := NewTester(nil, false)
+	defer ethashA.Close()
+
+	ethashB := NewTester(nil, false)
+	defer ethashB.Close()
+
+	ethashC := NewTester(nil, false)
+	defer ethashC.Close()
+
+	var (
+		epoch             uint64 = 83
+		ecip1099Block     uint64 = 2520000
+		nextEpochDefault  uint64 = 84
+		nextEpochECIP1099 uint64 = 42
+		maxUint64         uint64 = math.MaxUint64
+	)
+	// test without ecip-1099 enabled
+	currentIA, futureIA := ethashA.caches.get(epoch, epochLengthDefault, &maxUint64)
+	currentA := currentIA.(*cache)
+	if currentA.epoch != epoch {
+		t.Errorf("cache: current epoch mismatch: have %d, want %d", currentA.epoch, epoch)
+	}
+	futureA := futureIA.(*cache)
+	if futureA.epoch != nextEpochDefault {
+		t.Errorf("cache: future epoch mismatch: have %d, want %d", futureA.epoch, nextEpochDefault)
+	}
+	// test activation boundary of ecip-1099
+	currentIB, futureIB := ethashB.caches.get(epoch, epochLengthDefault, &ecip1099Block)
+	currentB := currentIB.(*cache)
+	if currentB.epoch != epoch {
+		t.Errorf("cache: current epoch mismatch: have %d, want %d", currentB.epoch, epoch)
+	}
+	futureB := futureIB.(*cache)
+	if futureB.epoch != nextEpochECIP1099 {
+		t.Errorf("cache: future epoch mismatch: have %d, want %d", futureB.epoch, nextEpochECIP1099)
+	}
+	// test post ecip-1099 activation
+	currentIC, futureIC := ethashC.caches.get(nextEpochECIP1099, epochLengthECIP1099, &ecip1099Block)
+	currentC := currentIC.(*cache)
+	if currentC.epoch != nextEpochECIP1099 {
+		t.Errorf("cache: current epoch mismatch: have %d, want %d", currentC.epoch, nextEpochECIP1099)
+	}
+	futureC := futureIC.(*cache)
+	if futureC.epoch != nextEpochECIP1099+1 {
+		t.Errorf("cache: future epoch mismatch: have %d, want %d", futureC.epoch, nextEpochECIP1099+1)
+	}
+}
 
 // Tests that ethash works correctly in test mode.
 func TestTestMode(t *testing.T) {
@@ -46,10 +97,10 @@ func TestTestMode(t *testing.T) {
 	case block := <-results:
 		header.Nonce = types.EncodeNonce(block.Nonce())
 		header.MixDigest = block.MixDigest()
-		if err := ethash.VerifySeal(nil, header); err != nil {
+		if err := ethash.verifySeal(nil, header, false); err != nil {
 			t.Fatalf("unexpected verification error: %v", err)
 		}
-	case <-time.NewTimer(time.Second).C:
+	case <-time.NewTimer(4 * time.Second).C:
 		t.Error("sealing result timeout")
 	}
 }
@@ -62,7 +113,14 @@ func TestCacheFileEvict(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(tmpdir)
-	e := New(Config{CachesInMem: 3, CachesOnDisk: 10, CacheDir: tmpdir, PowMode: ModeTest}, nil, false)
+
+	config := Config{
+		CachesInMem:  3,
+		CachesOnDisk: 10,
+		CacheDir:     tmpdir,
+		PowMode:      ModeTest,
+	}
+	e := New(config, nil, false)
 	defer e.Close()
 
 	workers := 8
@@ -77,16 +135,15 @@ func TestCacheFileEvict(t *testing.T) {
 
 func verifyTest(wg *sync.WaitGroup, e *Ethash, workerIndex, epochs int) {
 	defer wg.Done()
-
-	const wiggle = 4 * epochLength
+	const wiggle = 4 * epochLengthDefault
 	r := rand.New(rand.NewSource(int64(workerIndex)))
 	for epoch := 0; epoch < epochs; epoch++ {
-		block := int64(epoch)*epochLength - wiggle/2 + r.Int63n(wiggle)
+		block := int64(epoch)*epochLengthDefault - wiggle/2 + r.Int63n(wiggle)
 		if block < 0 {
 			block = 0
 		}
 		header := &types.Header{Number: big.NewInt(block), Difficulty: big.NewInt(100)}
-		e.VerifySeal(nil, header)
+		e.verifySeal(nil, header, false)
 	}
 }
 
@@ -128,7 +185,7 @@ func TestRemoteSealer(t *testing.T) {
 	}
 }
 
-func TestHashRate(t *testing.T) {
+func TestHashrate(t *testing.T) {
 	var (
 		hashrate = []hexutil.Uint64{100, 200, 300}
 		expect   uint64
@@ -143,7 +200,7 @@ func TestHashRate(t *testing.T) {
 
 	api := &API{ethash}
 	for i := 0; i < len(hashrate); i += 1 {
-		if res := api.SubmitHashRate(hashrate[i], ids[i]); !res {
+		if res := api.SubmitHashrate(hashrate[i], ids[i]); !res {
 			t.Error("remote miner submit hashrate failed")
 		}
 		expect += uint64(hashrate[i])
@@ -163,7 +220,7 @@ func TestClosedRemoteSealer(t *testing.T) {
 		t.Error("expect to return an error to indicate ethash is stopped")
 	}
 
-	if res := api.SubmitHashRate(hexutil.Uint64(100), common.HexToHash("a")); res {
+	if res := api.SubmitHashrate(hexutil.Uint64(100), common.HexToHash("a")); res {
 		t.Error("expect to return false when submit hashrate to a stopped ethash")
 	}
 }

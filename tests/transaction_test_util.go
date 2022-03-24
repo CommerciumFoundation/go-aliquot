@@ -23,7 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/params/types/ctypes"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -32,6 +32,7 @@ type TransactionTest struct {
 	RLP            hexutil.Bytes `json:"rlp"`
 	Byzantium      ttFork
 	Constantinople ttFork
+	Istanbul       ttFork
 	EIP150         ttFork
 	EIP158         ttFork
 	Frontier       ttFork
@@ -43,9 +44,9 @@ type ttFork struct {
 	Hash   common.UnprefixedHash    `json:"hash"`
 }
 
-func (tt *TransactionTest) Run(config *params.ChainConfig) error {
+func (tt *TransactionTest) Run(config ctypes.ChainConfigurator) error {
 
-	validateTx := func(rlpData hexutil.Bytes, signer types.Signer, isHomestead bool) (*common.Address, *common.Hash, error) {
+	validateTx := func(rlpData hexutil.Bytes, signer types.Signer, isEIP2F bool, isEIP2028F bool) (*common.Address, *common.Hash, error) {
 		tx := new(types.Transaction)
 		if err := rlp.DecodeBytes(rlpData, tx); err != nil {
 			return nil, nil, err
@@ -55,7 +56,7 @@ func (tt *TransactionTest) Run(config *params.ChainConfig) error {
 			return nil, nil, err
 		}
 		// Intrinsic gas
-		requiredGas, err := core.IntrinsicGas(tx.Data(), tx.To() == nil, isHomestead)
+		requiredGas, err := core.IntrinsicGas(tx.Data(), tx.AccessList(), tx.To() == nil, isEIP2F, isEIP2028F)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -71,37 +72,39 @@ func (tt *TransactionTest) Run(config *params.ChainConfig) error {
 		signer      types.Signer
 		fork        ttFork
 		isHomestead bool
+		isIstanbul  bool
 	}{
-		{"Frontier", types.FrontierSigner{}, tt.Frontier, false},
-		{"Homestead", types.HomesteadSigner{}, tt.Homestead, true},
-		{"EIP150", types.HomesteadSigner{}, tt.EIP150, true},
-		{"EIP158", types.NewEIP155Signer(config.ChainID), tt.EIP158, true},
-		{"Byzantium", types.NewEIP155Signer(config.ChainID), tt.Byzantium, true},
-		{"Constantinople", types.NewEIP155Signer(config.ChainID), tt.Constantinople, true},
+		{"Frontier", types.FrontierSigner{}, tt.Frontier, false, false},
+		{"Homestead", types.HomesteadSigner{}, tt.Homestead, true, false},
+		{"EIP150", types.HomesteadSigner{}, tt.EIP150, true, false},
+		{"EIP158", types.NewEIP155Signer(config.GetChainID()), tt.EIP158, true, false},
+		{"Byzantium", types.NewEIP155Signer(config.GetChainID()), tt.Byzantium, true, false},
+		{"Constantinople", types.NewEIP155Signer(config.GetChainID()), tt.Constantinople, true, false},
+		{"Istanbul", types.NewEIP155Signer(config.GetChainID()), tt.Istanbul, true, true},
 	} {
-		sender, txhash, err := validateTx(tt.RLP, testcase.signer, testcase.isHomestead)
+		sender, txhash, err := validateTx(tt.RLP, testcase.signer, testcase.isHomestead, testcase.isIstanbul)
 
 		if testcase.fork.Sender == (common.UnprefixedAddress{}) {
 			if err == nil {
-				return fmt.Errorf("Expected error, got none (address %v)", sender.String())
+				return fmt.Errorf("expected error, got none (address %v)[%v]", sender.String(), testcase.name)
 			}
 			continue
 		}
 		// Should resolve the right address
 		if err != nil {
-			return fmt.Errorf("Got error, expected none: %v", err)
+			return fmt.Errorf("got error, expected none: %v", err)
 		}
 		if sender == nil {
 			return fmt.Errorf("sender was nil, should be %x", common.Address(testcase.fork.Sender))
 		}
 		if *sender != common.Address(testcase.fork.Sender) {
-			return fmt.Errorf("Sender mismatch: got %x, want %x", sender, testcase.fork.Sender)
+			return fmt.Errorf("sender mismatch: got %x, want %x", sender, testcase.fork.Sender)
 		}
 		if txhash == nil {
 			return fmt.Errorf("txhash was nil, should be %x", common.Hash(testcase.fork.Hash))
 		}
 		if *txhash != common.Hash(testcase.fork.Hash) {
-			return fmt.Errorf("Hash mismatch: got %x, want %x", *txhash, testcase.fork.Hash)
+			return fmt.Errorf("hash mismatch: got %x, want %x", *txhash, testcase.fork.Hash)
 		}
 	}
 	return nil

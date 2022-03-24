@@ -25,18 +25,32 @@ import (
 
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/consensus/ethash"
-	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/params"
 	"gopkg.in/urfave/cli.v1"
 )
 
 var (
+	VersionCheckUrlFlag = cli.StringFlag{
+		Name:  "check.url",
+		Usage: "URL to use when checking vulnerabilities",
+		Value: "https://geth.ethereum.org/docs/vulnerabilities/vulnerabilities.json",
+	}
+	VersionCheckVersionFlag = cli.StringFlag{
+		Name:  "check.version",
+		Usage: "Version to check",
+		Value: fmt.Sprintf("Geth/v%v/%v-%v/%v",
+			params.VersionWithCommit(gitCommit, gitDate),
+			runtime.GOOS, runtime.GOARCH, runtime.Version()),
+	}
 	makecacheCommand = cli.Command{
 		Action:    utils.MigrateFlags(makecache),
 		Name:      "makecache",
 		Usage:     "Generate ethash verification cache (for testing)",
 		ArgsUsage: "<blockNum> <outputDir>",
-		Category:  "MISCELLANEOUS COMMANDS",
+		Flags: []cli.Flag{
+			utils.EthashEpochLengthFlag,
+		},
+		Category: "MISCELLANEOUS COMMANDS",
 		Description: `
 The makecache command generates an ethash cache in <outputDir>.
 
@@ -49,7 +63,10 @@ Regular users do not need to execute it.
 		Name:      "makedag",
 		Usage:     "Generate ethash mining DAG (for testing)",
 		ArgsUsage: "<blockNum> <outputDir>",
-		Category:  "MISCELLANEOUS COMMANDS",
+		Flags: []cli.Flag{
+			utils.EthashEpochLengthFlag,
+		},
+		Category: "MISCELLANEOUS COMMANDS",
 		Description: `
 The makedag command generates an ethash DAG in <outputDir>.
 
@@ -65,6 +82,21 @@ Regular users do not need to execute it.
 		Category:  "MISCELLANEOUS COMMANDS",
 		Description: `
 The output of this command is supposed to be machine-readable.
+`,
+	}
+	versionCheckCommand = cli.Command{
+		Action: utils.MigrateFlags(versionCheck),
+		Flags: []cli.Flag{
+			VersionCheckUrlFlag,
+			VersionCheckVersionFlag,
+		},
+		Name:      "version-check",
+		Usage:     "Checks (online) whether the current version suffers from any known security vulnerabilities",
+		ArgsUsage: "<versionstring (optional)>",
+		Category:  "MISCELLANEOUS COMMANDS",
+		Description: `
+The version-check command fetches vulnerability-information from https://geth.ethereum.org/docs/vulnerabilities/vulnerabilities.json, 
+and displays information about any security vulnerabilities that affect the currently executing version.
 `,
 	}
 	licenseCommand = cli.Command{
@@ -86,7 +118,10 @@ func makecache(ctx *cli.Context) error {
 	if err != nil {
 		utils.Fatalf("Invalid block number: %v", err)
 	}
-	ethash.MakeCache(block, args[1])
+
+	epochLength := ctx.Uint64(utils.EthashEpochLengthFlag.Name)
+
+	ethash.MakeCache(block, epochLength, args[1])
 
 	return nil
 }
@@ -101,13 +136,20 @@ func makedag(ctx *cli.Context) error {
 	if err != nil {
 		utils.Fatalf("Invalid block number: %v", err)
 	}
-	ethash.MakeDataset(block, args[1])
+
+	epochLength := ctx.Uint64(utils.EthashEpochLengthFlag.Name)
+
+	ethash.MakeDataset(block, epochLength, args[1])
 
 	return nil
 }
 
 func version(ctx *cli.Context) error {
-	fmt.Println(strings.Title(clientIdentifier))
+	versionClientIdentifier := clientIdentifier
+	if params.VersionName != "" {
+		versionClientIdentifier = params.VersionName
+	}
+	fmt.Println(strings.Title(versionClientIdentifier))
 	fmt.Println("Version:", params.VersionWithMeta)
 	if gitCommit != "" {
 		fmt.Println("Git Commit:", gitCommit)
@@ -116,8 +158,6 @@ func version(ctx *cli.Context) error {
 		fmt.Println("Git Commit Date:", gitDate)
 	}
 	fmt.Println("Architecture:", runtime.GOARCH)
-	fmt.Println("Protocol Versions:", eth.ProtocolVersions)
-	fmt.Println("Network Id:", eth.DefaultConfig.NetworkId)
 	fmt.Println("Go Version:", runtime.Version())
 	fmt.Println("Operating System:", runtime.GOOS)
 	fmt.Printf("GOPATH=%s\n", os.Getenv("GOPATH"))

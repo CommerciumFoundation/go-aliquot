@@ -20,6 +20,10 @@
 	// callstack is the current recursive call stack of the EVM execution.
 	callstack: [{}],
 
+	// getCallstackLength (optional) is used for optimisation reasons, checking from within go
+	// if the `step` method has to be called for a VM opcode.
+	getCallstackLength: function() {return this.callstack.length;},
+
 	// descended tracks whether we've just descended from an outer transaction into
 	// an inner call.
 	descended: false,
@@ -47,6 +51,7 @@
 				type:    op,
 				from:    toHex(log.contract.getAddress()),
 				input:   toHex(log.memory.slice(inOff, inEnd)),
+				gas:     log.getAvailableGas(),
 				gasIn:   log.getGas(),
 				gasCost: log.getCost(),
 				value:   '0x' + log.stack.peek(0).toString(16)
@@ -61,7 +66,14 @@
 			if (this.callstack[left-1].calls === undefined) {
 				this.callstack[left-1].calls = [];
 			}
-			this.callstack[left-1].calls.push({type: op});
+			this.callstack[left-1].calls.push({
+				type:    op,
+				from:    toHex(log.contract.getAddress()),
+				to:      toHex(toAddress(log.stack.peek(0).toString(16))),
+				gasIn:   log.getGas(),
+				gasCost: log.getCost(),
+				value:   '0x' + db.getBalance(log.contract.getAddress()).toString(16)
+			});
 			return
 		}
 		// If a new method invocation is being done, add to the call stack
@@ -118,7 +130,7 @@
 
 			if (call.type == 'CREATE' || call.type == "CREATE2") {
 				// If the call was a CREATE, retrieve the contract address and output code
-				call.gasUsed = '0x' + bigInt(call.gasIn - call.gasCost - log.getGas()).toString(16);
+				call.gasUsed = '0x' + bigInt(call.gas - (log.getGas() - (call.gasIn - call.gasCost))).toString(16);
 				delete call.gasIn; delete call.gasCost;
 
 				var ret = log.stack.peek(0);
@@ -132,13 +144,12 @@
 				// If the call was a contract call, retrieve the gas usage and output
 				if (call.gas !== undefined) {
 					call.gasUsed = '0x' + bigInt(call.gasIn - call.gasCost + call.gas - log.getGas()).toString(16);
-
-					var ret = log.stack.peek(0);
-					if (!ret.equals(0)) {
-						call.output = toHex(log.memory.slice(call.outOff, call.outOff + call.outLen));
-					} else if (call.error === undefined) {
-						call.error = "internal failure"; // TODO(karalabe): surface these faults somehow
-					}
+				}
+				var ret = log.stack.peek(0);
+				if (!ret.equals(0)) {
+					call.output = toHex(log.memory.slice(call.outOff, call.outOff + call.outLen));
+				} else if (call.error === undefined) {
+					call.error = "internal failure"; // TODO(karalabe): surface these faults somehow
 				}
 				delete call.gasIn; delete call.gasCost;
 				delete call.outOff; delete call.outLen;
@@ -208,7 +219,7 @@
 		} else if (ctx.error !== undefined) {
 			result.error = ctx.error;
 		}
-		if (result.error !== undefined) {
+		if (result.error !== undefined && (result.error !== "execution reverted" || result.output ==="0x")) {
 			delete result.output;
 		}
 		return this.finalize(result);

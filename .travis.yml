@@ -3,223 +3,155 @@ go_import_path: github.com/ethereum/go-ethereum
 sudo: false
 jobs:
   include:
-        # This builder only tests code linters on latest version of Go
-    - stage: lint
-      os: linux
-      dist: xenial
-      go: 1.12.x
-      env:
-        - lint
-      git:
-        submodules: false # avoid cloning ethereum/tests
-      script:
-        - go run build/ci.go lint
 
-    - stage: build
-      os: linux
-      dist: xenial
-      go: 1.10.x
-      script:
-      - go run build/ci.go install
-      - go run build/ci.go test -coverage $TEST_PACKAGES
+  # Run linter check. Only test code linters on latest version of Go.
+  - stage: lint
+    os: linux
+    dist: xenial
+    go: 1.16.x
+    env:
+      - lint
+    git:
+      submodules: false
+    script:
+      - make lint
 
-    - stage: build
-      os: linux
-      dist: xenial
-      go: 1.11.x
-      script:
-        - go run build/ci.go install
-        - go run build/ci.go test -coverage $TEST_PACKAGES
+  # Run core-geth -specific tests, proving regression-safety and config interoperability.
+  - stage: build
+    name: "Go1.16.x: make test-coregeth"
+    os: linux
+    dist: xenial
+    go: 1.16.x
+    script:
+    - travis_wait 60 make test-coregeth
 
-    # These are the latest Go versions.
-    - stage: build
-      os: linux
-      dist: xenial
-      go: 1.12.x
-      script:
-        - go run build/ci.go install
-        - go run build/ci.go test -coverage $TEST_PACKAGES
+  # Run build and tests against latest-1 Go version.
+  - stage: build
+    name: "Go1.15.x: make test"
+    os: linux
+    dist: xenial
+    go: 1.15.x
+    env:
+      - GO111MODULE=on
+    script:
+      - make all
+      - travis_wait 60 make test
 
-    - stage: build
-      os: osx
-      go: 1.12.x
-      script:
-        - echo "Increase the maximum number of open file descriptors on macOS"
-        - NOFILE=20480
-        - sudo sysctl -w kern.maxfiles=$NOFILE
-        - sudo sysctl -w kern.maxfilesperproc=$NOFILE
-        - sudo launchctl limit maxfiles $NOFILE $NOFILE
-        - sudo launchctl limit maxfiles
-        - ulimit -S -n $NOFILE
-        - ulimit -n
-        - unset -f cd # workaround for https://github.com/travis-ci/travis-ci/issues/8703
-        - go run build/ci.go install
-        - go run build/ci.go test -coverage $TEST_PACKAGES
+  # Run build and tests on ARM64 on Pull Requests.
+  # These tests are divided in half because their aggregate typical runtime
+  # exceeds Travis' time limit (~60m) and were consistently causing timeouts.
+  - stage: build
+    name: "ARM64/Go1.16.x: make test [A-G]"
+    if: type = pull_request
+    os: linux
+    arch: arm64
+    dist: xenial
+    go: 1.16.x
+    env:
+      - GO111MODULE=on
+    script:
+      - go run build/ci.go test -timeout 30m -coverage $(printf './%s/... ' $(go list ./... | sed 's|github.com/ethereum/go-ethereum||g' | cut -d'/' -f2 | uniq | grep -E '^[a-g]'))
+  - stage: build
+    name: "ARM64/Go1.16.x: make test [H-Z]"
+    if: type = pull_request
+    os: linux
+    arch: arm64
+    dist: xenial
+    go: 1.16.x
+    env:
+      - GO111MODULE=on
+    script:
+      - go run build/ci.go test -timeout 30m -coverage $(printf './%s/... ' $(go list ./... | sed 's|github.com/ethereum/go-ethereum||g' | cut -d'/' -f2 | uniq | grep -E '^[h-z]'))
 
-    # This builder does the Ubuntu PPA upload
-    - stage: build
-      if: type = push
-      os: linux
-      dist: xenial
-      go: 1.12.x
-      env:
-        - ubuntu-ppa
-      git:
-        submodules: false # avoid cloning ethereum/tests
-      addons:
-        apt:
-          packages:
-            - devscripts
-            - debhelper
-            - dput
-            - fakeroot
-            - python-bzrlib
-            - python-paramiko
-      script:
-        - echo '|1|7SiYPr9xl3uctzovOTj4gMwAC1M=|t6ReES75Bo/PxlOPJ6/GsGbTrM0= ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEA0aKz5UTUndYgIGG7dQBV+HaeuEZJ2xPHo2DS2iSKvUL4xNMSAY4UguNW+pX56nAQmZKIZZ8MaEvSj6zMEDiq6HFfn5JcTlM80UwlnyKe8B8p7Nk06PPQLrnmQt5fh0HmEcZx+JU9TZsfCHPnX7MNz4ELfZE6cFsclClrKim3BHUIGq//t93DllB+h4O9LHjEUsQ1Sr63irDLSutkLJD6RXchjROXkNirlcNVHH/jwLWR5RcYilNX7S5bIkK8NlWPjsn/8Ua5O7I9/YoE97PpO6i73DTGLh5H9JN/SITwCKBkgSDWUt61uPK3Y11Gty7o2lWsBjhBUm2Y38CBsoGmBw==' >> ~/.ssh/known_hosts
-        - go run build/ci.go debsrc -upload ethereum/ethereum -sftp-user geth-ci -signer "Go Ethereum Linux Builder <geth-ci@ethereum.org>"
+  # Run build and tests with environment-aware possible artifact deployment.
+  - stage: build
+    if: type = push
+    name: "Go1.16.x: make test && deploy"
+    os: linux
+    dist: xenial
+    go: 1.16.x
+    script:
+    - go run build/ci.go install -dlgo
+    - travis_wait 60 make test
+    before_deploy:
+    - sh build/deploy.sh
+    deploy:
+      provider: releases
+      api_key:
+        secure: f5ewX8iaY8E63wEGtLPZ8JF0/KUssJgAE+lqS7Nx5XxAM/GuE5X7mb9FmOiSzYyOexiftG8pwY0HVSXAaNk6HEl1GqlVsqMfuZgrVOAs8e0ltWgseI2T9qDp/oxxwWQ8cnPS3GrLwYUQTE+XfphL9aKkvt2RhoMmd1FPy6Dp0AYxzfLiZWCucBrR7HyHlIUjuM/DdN5U5te2loGhCyrDaKNeiIHQYp7h99cXFhKgC2N1mvXdIE7jxfiJGyEbmNksO0OY4RqBMNl7unOr8DvFf9dQBUc9cWfSRcAxt2DK4+zamX/0HJYfYRJR2Y2+z1oHrbJQnZm+9ZnOaXJt7bdWvON8jLJS+PLZT0kcSklSkKy3WEulijaGn1SIzEesadhnyHZxeDFgMnjVkSOCS0pDNtIv0SxfayqXvbYHzJhRDC4uVTRb+/PxMtZxIPCYBxLHJF6bkwmEWELl5I7UavN+jxuhkMDatqfN4V/j7JfqrLYFLHT9ByE5IBznizvJdxwXg8eo/RDJIJUwHjmKwsX9XBYmEX/UGe1O8ujJNTmg3acX9ECbwM2zgs1Br5WZtjRRDHT+YY6CbP2kPOCkpGqxwM0HPOJN/wALNVeeyCUAw3p/9mNbzJhqA8wCPmgnkzi+4m1HQoF3ADy15gUFEiq914o4dv2eQjUbgs0MaHskhEc=
+      file: core-geth*-$TRAVIS_OS_NAME*
+      file_glob: true
+      draft: true
+      on:
+        repo: etclabscore/core-geth
+        tags: true
+      skip_cleanup: true
+      tag_name: "$TRAVIS_TAG"
 
-    # This builder does the Linux Azure uploads
-    - stage: build
-      if: type = push
-      os: linux
-      dist: xenial
-      sudo: required
-      go: 1.12.x
-      env:
-        - azure-linux
-      git:
-        submodules: false # avoid cloning ethereum/tests
-      addons:
-        apt:
-          packages:
-            - gcc-multilib
-      script:
-        # Build for the primary platforms that Trusty can manage
-        - go run build/ci.go install
-        - go run build/ci.go archive -type tar -signer LINUX_SIGNING_KEY -upload gethstore/builds
-        - go run build/ci.go install -arch 386
-        - go run build/ci.go archive -arch 386 -type tar -signer LINUX_SIGNING_KEY -upload gethstore/builds
+  # Run build on ARM5 with environment-aware possible artifact deployment.
+  - stage: build
+    if: type = push
+    name: "ARM5/Go1.16.x: go run build/ci.go install && deploy"
+    os: linux
+    dist: xenial
+    sudo: required
+    go: 1.16.x
+    env:
+      - ARMv5
+    git:
+      submodules: false # avoid cloning ethereum/tests
+    addons:
+      apt:
+        packages:
+          - gcc-multilib
+    script:
+      # Switch over GCC to cross compilation (breaks 386, hence why do it here only)
+      - sudo -E apt-get -yq --no-install-suggests --no-install-recommends --force-yes install gcc-arm-linux-gnueabi libc6-dev-armel-cross gcc-arm-linux-gnueabihf libc6-dev-armhf-cross gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+      - sudo ln -s /usr/include/asm-generic /usr/include/asm
+      - GOPATH=~/go_arm GOARM=5 go run build/ci.go install -dlgo -arch arm -cc arm-linux-gnueabi-gcc
+    before_deploy:
+      - sh build/deploy_arm.sh
+    deploy:
+      provider: releases
+      api_key:
+        secure: f5ewX8iaY8E63wEGtLPZ8JF0/KUssJgAE+lqS7Nx5XxAM/GuE5X7mb9FmOiSzYyOexiftG8pwY0HVSXAaNk6HEl1GqlVsqMfuZgrVOAs8e0ltWgseI2T9qDp/oxxwWQ8cnPS3GrLwYUQTE+XfphL9aKkvt2RhoMmd1FPy6Dp0AYxzfLiZWCucBrR7HyHlIUjuM/DdN5U5te2loGhCyrDaKNeiIHQYp7h99cXFhKgC2N1mvXdIE7jxfiJGyEbmNksO0OY4RqBMNl7unOr8DvFf9dQBUc9cWfSRcAxt2DK4+zamX/0HJYfYRJR2Y2+z1oHrbJQnZm+9ZnOaXJt7bdWvON8jLJS+PLZT0kcSklSkKy3WEulijaGn1SIzEesadhnyHZxeDFgMnjVkSOCS0pDNtIv0SxfayqXvbYHzJhRDC4uVTRb+/PxMtZxIPCYBxLHJF6bkwmEWELl5I7UavN+jxuhkMDatqfN4V/j7JfqrLYFLHT9ByE5IBznizvJdxwXg8eo/RDJIJUwHjmKwsX9XBYmEX/UGe1O8ujJNTmg3acX9ECbwM2zgs1Br5WZtjRRDHT+YY6CbP2kPOCkpGqxwM0HPOJN/wALNVeeyCUAw3p/9mNbzJhqA8wCPmgnkzi+4m1HQoF3ADy15gUFEiq914o4dv2eQjUbgs0MaHskhEc=
+      file: core-geth*-arm*
+      file_glob: true
+      draft: true
+      on:
+        repo: etclabscore/core-geth
+        tags: true
+      skip_cleanup: true
+      tag_name: "$TRAVIS_TAG"
 
-        # Switch over GCC to cross compilation (breaks 386, hence why do it here only)
-        - sudo -E apt-get -yq --no-install-suggests --no-install-recommends --force-yes install gcc-arm-linux-gnueabi libc6-dev-armel-cross gcc-arm-linux-gnueabihf libc6-dev-armhf-cross gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-        - sudo ln -s /usr/include/asm-generic /usr/include/asm
-
-        - GOARM=5 go run build/ci.go install -arch arm -cc arm-linux-gnueabi-gcc
-        - GOARM=5 go run build/ci.go archive -arch arm -type tar -signer LINUX_SIGNING_KEY -upload gethstore/builds
-        - GOARM=6 go run build/ci.go install -arch arm -cc arm-linux-gnueabi-gcc
-        - GOARM=6 go run build/ci.go archive -arch arm -type tar -signer LINUX_SIGNING_KEY -upload gethstore/builds
-        - GOARM=7 go run build/ci.go install -arch arm -cc arm-linux-gnueabihf-gcc
-        - GOARM=7 go run build/ci.go archive -arch arm -type tar -signer LINUX_SIGNING_KEY -upload gethstore/builds
-        - go run build/ci.go install -arch arm64 -cc aarch64-linux-gnu-gcc
-        - go run build/ci.go archive -arch arm64 -type tar -signer LINUX_SIGNING_KEY -upload gethstore/builds
-
-    # This builder does the Linux Azure MIPS xgo uploads
-    - stage: build
-      if: type = push
-      os: linux
-      dist: xenial
-      services:
-        - docker
-      go: 1.12.x
-      env:
-        - azure-linux-mips
-      git:
-        submodules: false # avoid cloning ethereum/tests
-      script:
-        - go run build/ci.go xgo --alltools -- --targets=linux/mips --ldflags '-extldflags "-static"' -v
-        - for bin in build/bin/*-linux-mips; do mv -f "${bin}" "${bin/-linux-mips/}"; done
-        - go run build/ci.go archive -arch mips -type tar -signer LINUX_SIGNING_KEY -upload gethstore/builds
-
-        - go run build/ci.go xgo --alltools -- --targets=linux/mipsle --ldflags '-extldflags "-static"' -v
-        - for bin in build/bin/*-linux-mipsle; do mv -f "${bin}" "${bin/-linux-mipsle/}"; done
-        - go run build/ci.go archive -arch mipsle -type tar -signer LINUX_SIGNING_KEY -upload gethstore/builds
-
-        - go run build/ci.go xgo --alltools -- --targets=linux/mips64 --ldflags '-extldflags "-static"' -v
-        - for bin in build/bin/*-linux-mips64; do mv -f "${bin}" "${bin/-linux-mips64/}"; done
-        - go run build/ci.go archive -arch mips64 -type tar -signer LINUX_SIGNING_KEY -upload gethstore/builds
-
-        - go run build/ci.go xgo --alltools -- --targets=linux/mips64le --ldflags '-extldflags "-static"' -v
-        - for bin in build/bin/*-linux-mips64le; do mv -f "${bin}" "${bin/-linux-mips64le/}"; done
-        - go run build/ci.go archive -arch mips64le -type tar -signer LINUX_SIGNING_KEY -upload gethstore/builds
-
-    # This builder does the Android Maven and Azure uploads
-    - stage: build
-      if: type = push
-      os: linux
-      dist: xenial
-      addons:
-        apt:
-          packages:
-            - oracle-java8-installer
-            - oracle-java8-set-default
-      language: android
-      android:
-        components:
-          - platform-tools
-          - tools
-          - android-15
-          - android-19
-          - android-24
-      env:
-        - azure-android
-        - maven-android
-      git:
-        submodules: false # avoid cloning ethereum/tests
-      before_install:
-        - curl https://dl.google.com/go/go1.12.linux-amd64.tar.gz | tar -xz
-        - export PATH=`pwd`/go/bin:$PATH
-        - export GOROOT=`pwd`/go
-        - export GOPATH=$HOME/go
-      script:
-        # Build the Android archive and upload it to Maven Central and Azure
-        - curl https://dl.google.com/android/repository/android-ndk-r19b-linux-x86_64.zip -o android-ndk-r19b.zip
-        - unzip -q android-ndk-r19b.zip && rm android-ndk-r19b.zip
-        - mv android-ndk-r19b $ANDROID_HOME/ndk-bundle
-
-        - mkdir -p $GOPATH/src/github.com/ethereum
-        - ln -s `pwd` $GOPATH/src/github.com/ethereum/go-ethereum
-        - go run build/ci.go aar -signer ANDROID_SIGNING_KEY -deploy https://oss.sonatype.org -upload gethstore/builds
-
-    # This builder does the OSX Azure, iOS CocoaPods and iOS Azure uploads
-    - stage: build
-      if: type = push
-      os: osx
-      go: 1.12.x
-      env:
-        - azure-osx
-        - azure-ios
-        - cocoapods-ios
-      git:
-        submodules: false # avoid cloning ethereum/tests
-      script:
-        - go run build/ci.go install
-        - go run build/ci.go archive -type tar -signer OSX_SIGNING_KEY -upload gethstore/builds
-
-        # Build the iOS framework and upload it to CocoaPods and Azure
-        - gem uninstall cocoapods -a -x
-        - gem install cocoapods
-
-        - mv ~/.cocoapods/repos/master ~/.cocoapods/repos/master.bak
-        - sed -i '.bak' 's/repo.join/!repo.join/g' $(dirname `gem which cocoapods`)/cocoapods/sources_manager.rb
-        - if [ "$TRAVIS_PULL_REQUEST" = "false" ]; then git clone --depth=1 https://github.com/CocoaPods/Specs.git ~/.cocoapods/repos/master && pod setup --verbose; fi
-
-        - xctool -version
-        - xcrun simctl list
-
-        # Workaround for https://github.com/golang/go/issues/23749
-        - export CGO_CFLAGS_ALLOW='-fmodules|-fblocks|-fobjc-arc'
-        - go run build/ci.go xcode -signer IOS_SIGNING_KEY -deploy trunk -upload gethstore/builds
-
-    # This builder does the Azure archive purges to avoid accumulating junk
-    - stage: build
-      if: type = cron
-      os: linux
-      dist: xenial
-      go: 1.12.x
-      env:
-        - azure-purge
-      git:
-        submodules: false # avoid cloning ethereum/tests
-      script:
-        - go run build/ci.go purge -store gethstore/builds -days 14
+  #Run build on OSX with environment-aware possible artifact deployment.
+  - stage: build
+    if: type = push
+    name: "OSX/Go1.16.x: make all && deploy"
+    os: osx
+    go: 1.16.x
+    script:
+    - echo "Increase the maximum number of open file descriptors on macOS"
+    - NOFILE=20480
+    - sudo sysctl -w kern.maxfiles=$NOFILE
+    - sudo sysctl -w kern.maxfilesperproc=$NOFILE
+    - sudo launchctl limit maxfiles $NOFILE $NOFILE
+    - sudo launchctl limit maxfiles
+    - ulimit -S -n $NOFILE
+    - ulimit -n
+    - unset -f cd
+    - go run build/ci.go install -dlgo
+    before_deploy:
+    - sh build/deploy.sh
+    deploy:
+      provider: releases
+      api_key:
+        secure: f5ewX8iaY8E63wEGtLPZ8JF0/KUssJgAE+lqS7Nx5XxAM/GuE5X7mb9FmOiSzYyOexiftG8pwY0HVSXAaNk6HEl1GqlVsqMfuZgrVOAs8e0ltWgseI2T9qDp/oxxwWQ8cnPS3GrLwYUQTE+XfphL9aKkvt2RhoMmd1FPy6Dp0AYxzfLiZWCucBrR7HyHlIUjuM/DdN5U5te2loGhCyrDaKNeiIHQYp7h99cXFhKgC2N1mvXdIE7jxfiJGyEbmNksO0OY4RqBMNl7unOr8DvFf9dQBUc9cWfSRcAxt2DK4+zamX/0HJYfYRJR2Y2+z1oHrbJQnZm+9ZnOaXJt7bdWvON8jLJS+PLZT0kcSklSkKy3WEulijaGn1SIzEesadhnyHZxeDFgMnjVkSOCS0pDNtIv0SxfayqXvbYHzJhRDC4uVTRb+/PxMtZxIPCYBxLHJF6bkwmEWELl5I7UavN+jxuhkMDatqfN4V/j7JfqrLYFLHT9ByE5IBznizvJdxwXg8eo/RDJIJUwHjmKwsX9XBYmEX/UGe1O8ujJNTmg3acX9ECbwM2zgs1Br5WZtjRRDHT+YY6CbP2kPOCkpGqxwM0HPOJN/wALNVeeyCUAw3p/9mNbzJhqA8wCPmgnkzi+4m1HQoF3ADy15gUFEiq914o4dv2eQjUbgs0MaHskhEc=
+      file: core-geth*-$TRAVIS_OS_NAME*
+      file_glob: true
+      draft: true
+      on:
+        repo: etclabscore/core-geth
+        tags: true
+      skip_cleanup: true
+      tag_name: "$TRAVIS_TAG"

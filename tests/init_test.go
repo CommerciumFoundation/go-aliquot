@@ -18,9 +18,11 @@ package tests
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,13 +32,39 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/params/types/coregeth"
+	"github.com/ethereum/go-ethereum/params/types/ctypes"
 )
+
+// Command line flags to configure the interpreters.
+var (
+	// The API of this value => filepath<str/ing>,capabilities<k=v>,...
+	testEVM   = flag.String("evmc.evm", "", "EVMC EVM1 configuration")
+	testEWASM = flag.String("evmc.ewasm", "", "EVMC EWASM configuration")
+)
+
+func TestMain(m *testing.M) {
+	flag.Parse()
+
+	if *testEVM != "" {
+		log.Printf("Running tests with %s=%s", "evmc.evm", *testEVM)
+		vm.InitEVMCEVM(*testEVM)
+	}
+
+	if *testEWASM != "" {
+		log.Printf("Running tests with %s=%s", "evmc.ewasm", *testEWASM)
+		vm.InitEVMCEwasm(*testEWASM)
+	}
+
+	os.Exit(m.Run())
+}
 
 var (
 	baseDir            = filepath.Join(".", "testdata")
 	blockTestDir       = filepath.Join(baseDir, "BlockchainTests")
 	stateTestDir       = filepath.Join(baseDir, "GeneralStateTests")
+	legacyStateTestDir = filepath.Join(baseDir, "LegacyTests", "Constantinople", "GeneralStateTests")
 	transactionTestDir = filepath.Join(baseDir, "TransactionTests")
 	vmTestDir          = filepath.Join(baseDir, "VMTests")
 	rlpTestDir         = filepath.Join(baseDir, "RLPTests")
@@ -92,12 +120,14 @@ type testMatcher struct {
 	failpat      []testFailure
 	skiploadpat  []*regexp.Regexp
 	slowpat      []*regexp.Regexp
+	skipforkpat  []*regexp.Regexp
 	whitelistpat *regexp.Regexp
+	noParallel   bool
 }
 
 type testConfig struct {
 	p      *regexp.Regexp
-	config params.ChainConfig
+	config ctypes.ChainConfigurator
 }
 
 type testFailure struct {
@@ -115,6 +145,11 @@ func (tm *testMatcher) skipLoad(pattern string) {
 	tm.skiploadpat = append(tm.skiploadpat, regexp.MustCompile(pattern))
 }
 
+// skipFork skips subtests with fork configs matching the pattern.
+func (tm *testMatcher) skipFork(pattern string) {
+	tm.skipforkpat = append(tm.skipforkpat, regexp.MustCompile(pattern))
+}
+
 // fails adds an expected failure for tests matching the pattern.
 func (tm *testMatcher) fails(pattern string, reason string) {
 	if reason == "" {
@@ -128,7 +163,7 @@ func (tm *testMatcher) whitelist(pattern string) {
 }
 
 // config defines chain config for tests matching the pattern.
-func (tm *testMatcher) config(pattern string, cfg params.ChainConfig) {
+func (tm *testMatcher) config(pattern string, cfg ctypes.ChainConfigurator) {
 	tm.configpat = append(tm.configpat, testConfig{regexp.MustCompile(pattern), cfg})
 }
 
@@ -154,14 +189,15 @@ func (tm *testMatcher) findSkip(name string) (reason string, skipload bool) {
 }
 
 // findConfig returns the chain config matching defined patterns.
-func (tm *testMatcher) findConfig(name string) *params.ChainConfig {
+func (tm *testMatcher) findConfig(name string) (config ctypes.ChainConfigurator, configRegexKey string) {
 	// TODO(fjl): name can be derived from testing.T when min Go version is 1.8
 	for _, m := range tm.configpat {
 		if m.p.MatchString(name) {
-			return &m.config
+			return m.config, m.p.String()
 		}
 	}
-	return new(params.ChainConfig)
+	log.Println("using empty config", name)
+	return new(coregeth.CoreGethChainConfig), ""
 }
 
 // checkFailure checks whether a failure is expected.
@@ -194,7 +230,7 @@ func (tm *testMatcher) walk(t *testing.T, dir string, runTest interface{}) {
 	dirinfo, err := os.Stat(dir)
 	if os.IsNotExist(err) || !dirinfo.IsDir() {
 		fmt.Fprintf(os.Stderr, "can't find test files in %s, did you clone the tests submodule?\n", dir)
-		t.Skip("missing test files")
+		t.Fatal("missing test files")
 	}
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		name := filepath.ToSlash(strings.TrimPrefix(path, dir+string(filepath.Separator)))
@@ -223,12 +259,15 @@ func (tm *testMatcher) runTestFile(t *testing.T, path, name string, runTest inte
 			t.Skip("Skipped by whitelist")
 		}
 	}
-	t.Parallel()
+	if !tm.noParallel {
+		t.Parallel()
+	}
 
 	// Load the file as map[string]<testType>.
 	m := makeMapFromTestFunc(runTest)
 	if err := readJSONFile(path, m.Addr().Interface()); err != nil {
-		t.Fatal(err)
+		panic(err)
+		// t.Fatal(err)
 	}
 
 	// Run all tests from the map. Don't wrap in a subtest if there is only one test in the file.
@@ -274,5 +313,16 @@ func runTestFunc(runTest interface{}, t *testing.T, name string, m reflect.Value
 		reflect.ValueOf(t),
 		reflect.ValueOf(name),
 		m.MapIndex(reflect.ValueOf(key)),
+	})
+}
+
+func TestMatcherWhitelist(t *testing.T) {
+	t.Parallel()
+	tm := new(testMatcher)
+	tm.whitelist("invalid*")
+	tm.walk(t, rlpTestDir, func(t *testing.T, name string, test *RLPTest) {
+		if name[:len("invalidRLPTest.json")] != "invalidRLPTest.json" {
+			t.Fatalf("invalid test found: %s != invalidRLPTest.json", name)
+		}
 	})
 }

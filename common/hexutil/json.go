@@ -86,7 +86,7 @@ func (b *Bytes) UnmarshalGraphQL(input interface{}) error {
 		}
 		*b = data
 	default:
-		err = fmt.Errorf("Unexpected type for Bytes: %v", input)
+		err = fmt.Errorf("unexpected type %T for Bytes", input)
 	}
 	return err
 }
@@ -220,7 +220,7 @@ func (b *Big) UnmarshalGraphQL(input interface{}) error {
 		num.SetInt64(int64(input))
 		*b = Big(num)
 	default:
-		err = fmt.Errorf("Unexpected type for BigInt: %v", input)
+		err = fmt.Errorf("unexpected type %T for BigInt", input)
 	}
 	return err
 }
@@ -228,6 +228,13 @@ func (b *Big) UnmarshalGraphQL(input interface{}) error {
 // Uint64 marshals/unmarshals as a JSON string with 0x prefix.
 // The zero value marshals as "0x0".
 type Uint64 uint64
+
+func (b *Uint64) Big() *big.Int {
+	if b == nil {
+		return nil
+	}
+	return new(big.Int).SetUint64((uint64)(*b))
+}
 
 // MarshalText implements encoding.TextMarshaler.
 func (b Uint64) MarshalText() ([]byte, error) {
@@ -284,7 +291,7 @@ func (b *Uint64) UnmarshalGraphQL(input interface{}) error {
 	case int32:
 		*b = Uint64(input)
 	default:
-		err = fmt.Errorf("Unexpected type for Long: %v", input)
+		err = fmt.Errorf("unexpected type %T for Long", input)
 	}
 	return err
 }
